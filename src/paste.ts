@@ -29,21 +29,42 @@ async function pressPaste(): Promise<void> {
   }
 }
 
+/** 平台相关的回车按键 */
+async function pressEnter(): Promise<void> {
+  const os = platform();
+
+  if (os === 'darwin') {
+    await execAsync(
+      'osascript -e \'tell application "System Events" to keystroke return\'',
+    );
+  } else if (os === 'win32') {
+    await execAsync(
+      'powershell -NoProfile -Command '
+        + '"Add-Type -AssemblyName System.Windows.Forms; '
+        + '[System.Windows.Forms.SendKeys]::SendWait(\'{ENTER}\')"',
+    );
+  } else {
+    await execAsync('xdotool key Return');
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * 执行粘贴并恢复剪贴板。
+ * 执行粘贴、回车发送，然后恢复剪贴板。
  *
  * 流程:
  * 1. 保存当前剪贴板内容
  * 2. 将目标文本写入剪贴板
  * 3. 模拟 Ctrl+V / Cmd+V 粘贴
  * 4. 等待粘贴完成
- * 5. 恢复原始剪贴板内容
+ * 5. 模拟 Enter 发送
+ * 6. 等待发送完成
+ * 7. 恢复原始剪贴板内容
  *
- * @param text 要粘贴的文字
+ * @param text 要粘贴并发送的文字
  */
 export async function doPasteAndRestore(text: string): Promise<void> {
   let original = '';
@@ -66,6 +87,9 @@ export async function doPasteAndRestore(text: string): Promise<void> {
     await pressPaste();
 
     await sleep(PASTE_RESTORE_DELAY_MS);
+
+    // 粘贴后再补一个回车，相当于按下发送
+    await pressEnter();
   } finally {
     // 无论粘贴是否成功，都恢复原始剪贴板
     try {

@@ -135,7 +135,7 @@
       <select class="hide-when-typing" id="deviceSelect"></select>
 
       <button id="sendBtn">发送到光标位置</button>
-      <p class="hide-when-typing hint">Ctrl+Enter 发送 · Enter 换行</p>
+      <p class="hide-when-typing hint">Enter 发送 · Ctrl+Enter 换行</p>
     </div>
 
     <div class="textarea-wrap">
@@ -232,7 +232,7 @@
 
     sendBtn.addEventListener('click', send);
     input.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
         e.preventDefault();
         send();
       }
