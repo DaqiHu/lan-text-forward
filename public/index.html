@@ -132,7 +132,7 @@
       <p class="hide-when-typing subtitle">手机打字，瞬间出现在电脑光标处</p>
 
       <label class="hide-when-typing" for="deviceSelect">目标设备</label>
-      <select id="deviceSelect"></select>
+      <select class="hide-when-typing" id="deviceSelect"></select>
 
       <button id="sendBtn">发送到光标位置</button>
       <p class="hide-when-typing hint">Ctrl+Enter 发送 · Enter 换行</p>
@@ -245,7 +245,7 @@
 
     function fitTextarea(vvHeight) {
       const avail = vvHeight - 40;
-      const maxTextH = Math.floor(avail * 0.48 * 3);
+      const maxTextH = Math.floor(avail * 0.80);
       textareaWrap.style.maxHeight = maxTextH + 'px';
       textareaWrap.style.flex = '0 0 auto';
       topBar.classList.add('keyboard');
