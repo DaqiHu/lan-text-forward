@@ -106,6 +106,11 @@
       box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.2);
     }
 
+    /* ---- 键盘弹出时隐藏装饰性元素 ---- */
+    .top-bar.keyboard .hide-when-typing {
+      display: none;
+    }
+
     /* ---- 底部状态栏 ---- */
     #status {
       flex-shrink: 0;
@@ -123,14 +128,14 @@
   <div class="app">
 
     <div class="top-bar">
-      <h1>📋 跨设备粘贴</h1>
-      <p class="subtitle">手机打字，瞬间出现在电脑光标处</p>
+      <h1 class="hide-when-typing">📋 跨设备粘贴</h1>
+      <p class="hide-when-typing subtitle">手机打字，瞬间出现在电脑光标处</p>
 
-      <label for="deviceSelect">目标设备</label>
+      <label class="hide-when-typing" for="deviceSelect">目标设备</label>
       <select id="deviceSelect"></select>
 
       <button id="sendBtn">发送到光标位置</button>
-      <p class="hint">Ctrl+Enter 发送 · Enter 换行</p>
+      <p class="hide-when-typing hint">Ctrl+Enter 发送 · Enter 换行</p>
     </div>
 
     <div class="textarea-wrap">
@@ -235,20 +240,22 @@
 
     // ── 键盘适配：输入法弹出时缩小文本框，保证按钮可见 ──
     const textareaWrap = document.querySelector('.textarea-wrap');
+    const topBar = document.querySelector('.top-bar');
     let keyboardOpen = false;
 
     function fitTextarea(vvHeight) {
-      // 顶部控件（标题+选择器+按钮+提示）占据约 270-300px
-      const avail = vvHeight - 40; // 去掉 padding
-      const maxTextH = Math.floor(avail * 0.48);
+      const avail = vvHeight - 40;
+      const maxTextH = Math.floor(avail * 0.48 * 3);
       textareaWrap.style.maxHeight = maxTextH + 'px';
       textareaWrap.style.flex = '0 0 auto';
+      topBar.classList.add('keyboard');
       keyboardOpen = true;
     }
 
     function restoreTextarea() {
       textareaWrap.style.maxHeight = '';
       textareaWrap.style.flex = '';
+      topBar.classList.remove('keyboard');
       keyboardOpen = false;
     }
 
