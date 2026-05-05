@@ -83,16 +83,17 @@
       margin-bottom: 12px;
     }
 
-    /* 文本框填满剩余空间 */
+    /* 文本框撑满剩余空间 */
     .scroll-area {
       flex: 1;
       min-height: 0;
-      overflow-y: auto;
-      -webkit-overflow-scrolling: touch;
+      display: flex;
+      flex-direction: column;
     }
     textarea {
       font-size: 16px;
       width: 100%;
+      flex: 1;
       padding: 14px 16px;
       border-radius: 12px;
       border: 1px solid #d2d2d7;
@@ -100,7 +101,6 @@
       resize: none;
       line-height: 1.5;
       display: block;
-      min-height: 120px;
     }
     textarea:focus {
       outline: none;
