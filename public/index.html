@@ -233,6 +233,53 @@
       }
     });
 
+    // ── 键盘适配：输入法弹出时缩小文本框，保证按钮可见 ──
+    const textareaWrap = document.querySelector('.textarea-wrap');
+    let keyboardOpen = false;
+
+    function fitTextarea(vvHeight) {
+      // 顶部控件（标题+选择器+按钮+提示）占据约 270-300px
+      const avail = vvHeight - 40; // 去掉 padding
+      const maxTextH = Math.floor(avail * 0.48);
+      textareaWrap.style.maxHeight = maxTextH + 'px';
+      textareaWrap.style.flex = '0 0 auto';
+      keyboardOpen = true;
+    }
+
+    function restoreTextarea() {
+      textareaWrap.style.maxHeight = '';
+      textareaWrap.style.flex = '';
+      keyboardOpen = false;
+    }
+
+    input.addEventListener('focus', () => {
+      // 等键盘完全弹出后再测量
+      setTimeout(() => {
+        const vv = window.visualViewport;
+        if (vv && vv.height < window.innerHeight - 80) {
+          fitTextarea(vv.height);
+        }
+      }, 400);
+    });
+
+    input.addEventListener('blur', () => {
+      restoreTextarea();
+    });
+
+    // visualViewport 变化（iOS 键盘弹出/收起）
+    if (window.visualViewport) {
+      let lastVV = window.visualViewport.height;
+      window.visualViewport.addEventListener('resize', () => {
+        const vv = window.visualViewport;
+        if (vv.height < lastVV - 80 && document.activeElement === input) {
+          fitTextarea(vv.height);
+        } else if (vv.height > lastVV + 80) {
+          restoreTextarea();
+        }
+        lastVV = vv.height;
+      });
+    }
+
     loadDevices();
     connectWS();
     setInterval(loadDevices, 30000);
