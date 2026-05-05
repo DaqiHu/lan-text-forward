@@ -7,28 +7,23 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
-      height: 100%;
+      height: 100dvh;
+      height: 100vh;
       overflow: hidden;
     }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      padding: 20px 20px 12px;
       background: #f5f5f7;
       color: #1d1d1f;
       display: flex;
       flex-direction: column;
-    }
-    .container {
       max-width: 480px;
       margin: 0 auto;
       width: 100%;
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
+      padding: 20px 20px 12px;
     }
 
-    /* 顶部固定区 */
+    /* ---- 顶部区块（始终在屏幕顶部） ---- */
     .top-bar {
       flex-shrink: 0;
     }
@@ -71,7 +66,6 @@
       color: #fff;
       border: none;
       cursor: pointer;
-      transition: background 0.2s;
       margin-bottom: 4px;
     }
     button:active { background: #0056b3; }
@@ -83,24 +77,23 @@
       margin-bottom: 12px;
     }
 
-    /* 文本框撑满剩余空间 */
-    .scroll-area {
+    /* ---- 文本框（撑满剩余空间，内容多时内部滚动） ---- */
+    .textarea-wrap {
       flex: 1;
       min-height: 0;
       display: flex;
-      flex-direction: column;
     }
     textarea {
-      font-size: 16px;
-      width: 100%;
       flex: 1;
+      width: 100%;
       padding: 14px 16px;
       border-radius: 12px;
       border: 1px solid #d2d2d7;
       background: #fff;
       resize: none;
       line-height: 1.5;
-      display: block;
+      font-size: 16px;
+      font-family: inherit;
     }
     textarea:focus {
       outline: none;
@@ -108,8 +101,8 @@
       box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.2);
     }
 
-    /* 底部状态栏 */
-    .status-bar {
+    /* ---- 底部状态栏 ---- */
+    #status {
       flex-shrink: 0;
       margin-top: 10px;
       font-size: 14px;
@@ -117,29 +110,28 @@
       text-align: center;
       min-height: 20px;
     }
-    .status-bar.success { color: #30b94a; }
-    .status-bar.error { color: #ff3b30; }
+    #status.success { color: #30b94a; }
+    #status.error { color: #ff3b30; }
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="top-bar">
-      <h1>📋 跨设备粘贴</h1>
-      <p class="subtitle">手机打字，瞬间出现在电脑光标处</p>
 
-      <label for="deviceSelect">目标设备</label>
-      <select id="deviceSelect"></select>
+  <div class="top-bar">
+    <h1>📋 跨设备粘贴</h1>
+    <p class="subtitle">手机打字，瞬间出现在电脑光标处</p>
 
-      <button id="sendBtn">发送到光标位置</button>
-      <p class="hint">Ctrl+Enter 发送 · Enter 换行</p>
-    </div>
+    <label for="deviceSelect">目标设备</label>
+    <select id="deviceSelect"></select>
 
-    <div class="scroll-area">
-      <textarea id="input" placeholder="在此输入文字"></textarea>
-    </div>
-
-    <div class="status-bar" id="status">加载设备列表...</div>
+    <button id="sendBtn">发送到光标位置</button>
+    <p class="hint">Ctrl+Enter 发送 · Enter 换行</p>
   </div>
+
+  <div class="textarea-wrap">
+    <textarea id="input" placeholder="在此输入文字"></textarea>
+  </div>
+
+  <div id="status">加载设备列表...</div>
 
   <script>
     const deviceSelect = document.getElementById('deviceSelect');
@@ -151,41 +143,34 @@
     let selfId = null;
     let deviceList = [];
 
-    // ── 加载设备列表 ──
     async function loadDevices() {
       try {
         const res = await fetch('/devices');
         const data = await res.json();
         selfId = data.selfId;
         deviceList = data.devices;
-
         const prevValue = deviceSelect.value;
         deviceSelect.innerHTML = '';
         data.devices.forEach(d => {
           const opt = document.createElement('option');
           opt.value = d.id;
-          const label = d.id === selfId
+          opt.textContent = d.id === selfId
             ? `${d.hostname} (${d.ip}) [本机]`
             : `${d.hostname} (${d.ip})`;
-          opt.textContent = label;
           if (d.id === selfId) opt.selected = true;
           deviceSelect.appendChild(opt);
         });
         if (prevValue && [...deviceSelect.options].some(o => o.value === prevValue)) {
           deviceSelect.value = prevValue;
         }
-        setStatus('设备列表已更新', null);
+        setStatus('设备列表已更新');
       } catch {
         setStatus('获取设备列表失败', 'error');
       }
     }
 
-    // ── WebSocket 连接 ──
     function connectWS() {
-      if (ws) {
-        ws.onclose = null;
-        ws.close();
-      }
+      if (ws) { ws.onclose = null; ws.close(); }
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
@@ -206,47 +191,33 @@
         setStatus('连接断开，3 秒后重连...', 'error');
         setTimeout(connectWS, 3000);
       };
-      ws.onerror = () => {
-        setStatus('连接错误', 'error');
-      };
+      ws.onerror = () => setStatus('连接错误', 'error');
     }
 
-    // ── 状态提示 ──
     function setStatus(text, type) {
       statusDiv.textContent = text;
-      statusDiv.className = type ? 'status-bar ' + type : 'status-bar';
+      statusDiv.className = type || '';
       if (type === 'success') {
         clearTimeout(statusDiv._timer);
         statusDiv._timer = setTimeout(() => {
           statusDiv.textContent = '设备列表已更新';
-          statusDiv.className = 'status-bar';
+          statusDiv.className = '';
         }, 3000);
       }
     }
 
-    // ── 发送 ──
     function send() {
       const targetId = deviceSelect.value;
       const text = input.value.trim();
-      if (!text) {
-        setStatus('请输入文字', 'error');
-        return;
-      }
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        setStatus('未连接到服务端', 'error');
-        return;
-      }
+      if (!text) { setStatus('请输入文字', 'error'); return; }
+      if (!ws || ws.readyState !== WebSocket.OPEN) { setStatus('未连接到服务端', 'error'); return; }
       ws.send(JSON.stringify({ targetId, text }));
-      setStatus('发送中...', null);
+      setStatus('发送中...');
       sendBtn.disabled = true;
       setTimeout(() => { sendBtn.disabled = false; }, 2000);
     }
 
-    // ── 事件绑定 ──
     sendBtn.addEventListener('click', send);
-
-    // Enter → 换行（默认行为）
-    // Ctrl+Enter / Cmd+Enter → 发送
     input.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
@@ -254,7 +225,6 @@
       }
     });
 
-    // ── 初始化 ──
     loadDevices();
     connectWS();
     setInterval(loadDevices, 30000);
