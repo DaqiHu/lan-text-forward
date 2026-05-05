@@ -238,50 +238,43 @@
       }
     });
 
-    // ── 键盘适配：输入法弹出时缩小文本框，保证按钮可见 ──
-    const textareaWrap = document.querySelector('.textarea-wrap');
+    // ── 键盘适配：缩小容器到可视区域，flex 自动分配空间 ──
+    const app = document.querySelector('.app');
     const topBar = document.querySelector('.top-bar');
-    let keyboardOpen = false;
 
-    function fitTextarea(vvHeight) {
-      const avail = vvHeight - 40;
-      const maxTextH = Math.floor(avail * 0.80);
-      textareaWrap.style.maxHeight = maxTextH + 'px';
-      textareaWrap.style.flex = '0 0 auto';
+    function fitAppToViewport(vvHeight) {
+      // 把 .app 容器缩小到键盘上方的可视区域
+      // flex 布局自动分配：top-bar 取自然高度，文本框占满剩余
+      app.style.height = vvHeight + 'px';
       topBar.classList.add('keyboard');
-      keyboardOpen = true;
     }
 
-    function restoreTextarea() {
-      textareaWrap.style.maxHeight = '';
-      textareaWrap.style.flex = '';
+    function restoreApp() {
+      app.style.height = '';
       topBar.classList.remove('keyboard');
-      keyboardOpen = false;
     }
 
     input.addEventListener('focus', () => {
-      // 等键盘完全弹出后再测量
       setTimeout(() => {
         const vv = window.visualViewport;
         if (vv && vv.height < window.innerHeight - 80) {
-          fitTextarea(vv.height);
+          fitAppToViewport(vv.height);
         }
       }, 400);
     });
 
     input.addEventListener('blur', () => {
-      restoreTextarea();
+      restoreApp();
     });
 
-    // visualViewport 变化（iOS 键盘弹出/收起）
     if (window.visualViewport) {
       let lastVV = window.visualViewport.height;
       window.visualViewport.addEventListener('resize', () => {
         const vv = window.visualViewport;
         if (vv.height < lastVV - 80 && document.activeElement === input) {
-          fitTextarea(vv.height);
+          fitAppToViewport(vv.height);
         } else if (vv.height > lastVV + 80) {
-          restoreTextarea();
+          restoreApp();
         }
         lastVV = vv.height;
       });
