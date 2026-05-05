@@ -1,8 +1,17 @@
 import os from 'os';
 import crypto from 'crypto';
 
-/** HTTP 服务端口 */
-export const HTTP_PORT = 3000;
+/** HTTP 服务默认端口（可通过 PORT 环境变量覆盖） */
+export const DEFAULT_HTTP_PORT = 18765;
+
+/** 解析最终使用的 HTTP 端口 */
+export function resolvePort(): number {
+  const env = process.env.PORT ? parseInt(process.env.PORT, 10) : NaN;
+  if (!isNaN(env) && env > 0 && env < 65536) {
+    return env;
+  }
+  return DEFAULT_HTTP_PORT;
+}
 
 /** UDP 多播发现端口 */
 export const DISCOVERY_PORT = 45678;

@@ -2,9 +2,12 @@ import express from 'express';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
-import { HTTP_PORT, RATE_LIMIT_MS, MAX_TEXT_LENGTH } from './config';
+import { execSync } from 'child_process';
+import { resolvePort, RATE_LIMIT_MS, MAX_TEXT_LENGTH } from './config';
 import { startDiscovery, DeviceInfo } from './discovery';
 import { doPasteAndRestore } from './paste';
+
+const HTTP_PORT = resolvePort();
 
 const app = express();
 const server = http.createServer(app);
@@ -175,7 +178,40 @@ wss.on('connection', (ws: WebSocket) => {
   });
 });
 
+// ─── 防火墙自检 ───────────────────────────────────────────────
+
+function printFirewallHelp(): void {
+  console.log('─────────────────────────────────────────────────────');
+  console.log('  如需从其他设备访问，请添加防火墙入站规则：');
+  console.log(`  netsh advfirewall firewall add rule name="lan-paste"`);
+  console.log(`    dir=in protocol=tcp localport=${HTTP_PORT} action=allow`);
+  console.log('─────────────────────────────────────────────────────');
+}
+
+function trySetupFirewall(): void {
+  try {
+    execSync(
+      `netsh advfirewall firewall add rule name="lan-paste (TCP ${HTTP_PORT})" `
+      + `dir=in protocol=tcp localport=${HTTP_PORT} action=allow `
+      + `profile=domain,private description="Allow LAN paste service"`,
+      { stdio: 'pipe', timeout: 5000 },
+    );
+    console.log('[防火墙] 入站规则已添加');
+  } catch {
+    printFirewallHelp();
+  }
+}
+
 // ─── 启动 ────────────────────────────────────────────────────
+
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[错误] 端口 ${HTTP_PORT} 已被占用，请使用 PORT=xxxxx 指定其他端口`);
+    process.exit(1);
+  }
+  console.error('[错误] 服务启动失败:', err.message);
+  process.exit(1);
+});
 
 server.listen(HTTP_PORT, '0.0.0.0', () => {
   const { networkInterfaces } = require('os');
@@ -192,5 +228,9 @@ server.listen(HTTP_PORT, '0.0.0.0', () => {
   }
   console.log('═══════════════════════════════════════════');
   console.log('  手机浏览器访问上述地址即可使用');
+  console.log('  提示：按 Ctrl+C 停止服务');
+  console.log('  PORT=xxxxx 可更换端口');
   console.log('═══════════════════════════════════════════');
+
+  trySetupFirewall();
 });

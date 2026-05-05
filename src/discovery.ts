@@ -3,13 +3,15 @@ import { networkInterfaces } from 'os';
 import {
   MULTICAST_ADDR,
   DISCOVERY_PORT,
-  HTTP_PORT,
+  resolvePort,
   ANNOUNCE_INTERVAL,
   DEVICE_TIMEOUT,
   CLEANUP_INTERVAL,
   DEVICE_ID,
   HOSTNAME,
 } from './config';
+
+const HTTP_PORT = resolvePort();
 
 export interface DeviceInfo {
   id: string;
