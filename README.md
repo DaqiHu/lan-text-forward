@@ -148,11 +148,26 @@ npm run build
 
 ### 3b. 手动安装（备用）
 
-如果不想用自动化脚本，也可以逐条执行 `nssm` 命令。以**管理员身份**打开 CMD 或 PowerShell：
+如果不想用自动化脚本，也可以逐条执行 `nssm` 命令。以**管理员身份**打开 CMD 或 PowerShell。
+
+首先确认 nssm 是否已在 PATH 中：
 
 ```batch
-REM 0. 确保 nssm.exe 已复制到 System32（或使用全路径调用）
+where nssm
+```
+
+如果已输出路径（如 `C:\ProgramData\chocolatey\bin\nssm.exe`），跳过 copy 步骤直接使用。如果没有，安装方式二选一：
+
+```batch
+REM 方式 A: chocolatey（推荐，自动加入 PATH）
+choco install nssm
+
+REM 方式 B: 手动下载并复制到 System32
+REM   从 https://nssm.cc/download 下载 nssm.exe
 copy scripts\nssm\nssm.exe C:\Windows\System32\
+```
+
+然后执行：
 
 REM 1. 创建服务
 nssm install lan-paste G:\GitHub\lan-text-forward\scripts\nssm\launchers\lan-paste.bat

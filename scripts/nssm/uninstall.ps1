@@ -16,10 +16,15 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $nssmSystem = Join-Path $env:SystemRoot "System32\nssm.exe"
 $nssmLocal  = Join-Path $scriptDir "nssm.exe"
 
-if (Test-Path $nssmSystem) { $nssmExe = $nssmSystem }
-elseif (Test-Path $nssmLocal) { $nssmExe = $nssmLocal }
-else {
-    Write-Host "✗ nssm.exe not found.  Nothing to uninstall with." -ForegroundColor Red
+$nssmCmd = Get-Command nssm -ErrorAction SilentlyContinue
+if ($nssmCmd) {
+    $nssmExe = $nssmCmd.Source
+} elseif (Test-Path $nssmSystem) {
+    $nssmExe = $nssmSystem
+} elseif (Test-Path $nssmLocal) {
+    $nssmExe = $nssmLocal
+} else {
+    Write-Host "nssm.exe not found.  Nothing to uninstall with." -ForegroundColor Red
     exit 1
 }
 

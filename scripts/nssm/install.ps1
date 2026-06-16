@@ -33,10 +33,19 @@ function Write-Err  { param([string]$Text) Write-Host "  ERR $Text" -ForegroundC
 $nssmLocal  = Join-Path $scriptDir "nssm.exe"
 $nssmSystem = Join-Path $env:SystemRoot "System32\nssm.exe"
 
-if (Test-Path $nssmSystem) {
+# Priority 1: already on PATH (e.g. chocolatey, manual install)
+$nssmCmd = Get-Command nssm -ErrorAction SilentlyContinue
+if ($nssmCmd) {
+    $nssmExe = $nssmCmd.Source
+    Write-OK "nssm already on PATH: $nssmExe"
+}
+# Priority 2: in System32
+elseif (Test-Path $nssmSystem) {
     $nssmExe = $nssmSystem
     Write-OK "nssm.exe found in System32"
-} elseif (Test-Path $nssmLocal) {
+}
+# Priority 3: local — copy to System32 so it's globally available
+elseif (Test-Path $nssmLocal) {
     Write-Step "Copying nssm.exe to System32..."
     Copy-Item $nssmLocal $nssmSystem -Force
     $nssmExe = $nssmSystem
@@ -44,9 +53,12 @@ if (Test-Path $nssmSystem) {
 } else {
     Write-Err "nssm.exe not found!"
     Write-Host ""
-    Write-Host "  Download from: https://nssm.cc/download" -ForegroundColor Yellow
-    Write-Host "  Extract nssm.exe and place it at:" -ForegroundColor Yellow
-    Write-Host "    $nssmLocal" -ForegroundColor Yellow
+    Write-Host "  Install options:" -ForegroundColor Yellow
+    Write-Host "    choco install nssm" -ForegroundColor Gray
+    Write-Host "    -- or --" -ForegroundColor Gray
+    Write-Host "    Download from https://nssm.cc/download" -ForegroundColor Gray
+    Write-Host "    Extract nssm.exe and place it at:" -ForegroundColor Gray
+    Write-Host "      $nssmLocal" -ForegroundColor Gray
     Write-Host "  Then re-run this script." -ForegroundColor Yellow
     exit 1
 }

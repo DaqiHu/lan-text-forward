@@ -13,12 +13,16 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $nssmSystem = Join-Path $env:SystemRoot "System32\nssm.exe"
 $nssmLocal  = Join-Path $scriptDir "nssm.exe"
 
-if (Test-Path $nssmSystem) {
+$nssmCmd = Get-Command nssm -ErrorAction SilentlyContinue
+if ($nssmCmd) {
+    $nssmExe = $nssmCmd.Source
+} elseif (Test-Path $nssmSystem) {
     $nssmExe = $nssmSystem
 } elseif (Test-Path $nssmLocal) {
     $nssmExe = $nssmLocal
 } else {
-    Write-Host "nssm.exe not found.  Download from https://nssm.cc/download" -ForegroundColor Yellow
+    Write-Host "nssm.exe not found.  Install: choco install nssm" -ForegroundColor Yellow
+    Write-Host "Or download from https://nssm.cc/download" -ForegroundColor Yellow
     Write-Host "Place it at: $nssmLocal or C:\Windows\System32\" -ForegroundColor Yellow
     exit 1
 }
