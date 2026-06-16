@@ -1,0 +1,13 @@
+{
+  "$schema": null,
+  "_comment": "NSSM 服务配置。enabled: true 的服务会被 install.ps1 注册为 Windows 服务。",
+  "services": [
+    {
+      "name": "lan-paste",
+      "displayName": "LAN Paste Service",
+      "description": "局域网快传粘贴服务 — 手机打字，电脑粘贴 (port 18765)",
+      "launcher": "launchers\\lan-paste.bat",
+      "enabled": true
+    }
+  ]
+}
