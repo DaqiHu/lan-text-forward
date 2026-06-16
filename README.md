@@ -146,6 +146,47 @@ npm run build
 - 配置开机自启、崩溃自动重启、日志轮转
 - 立即启动服务
 
+### 3b. 手动安装（备用）
+
+如果不想用自动化脚本，也可以逐条执行 `nssm` 命令。以**管理员身份**打开 CMD 或 PowerShell：
+
+```batch
+REM 0. 确保 nssm.exe 已复制到 System32（或使用全路径调用）
+copy scripts\nssm\nssm.exe C:\Windows\System32\
+
+REM 1. 创建服务
+nssm install lan-paste G:\GitHub\lan-text-forward\scripts\nssm\launchers\lan-paste.bat
+
+REM 2. 配置服务属性
+nssm set lan-paste DisplayName "LAN Paste Service"
+nssm set lan-paste Description "局域网快传粘贴服务 — 手机打字，电脑粘贴 (port 18765)"
+nssm set lan-paste AppDirectory G:\GitHub\lan-text-forward
+nssm set lan-paste Start SERVICE_AUTO_START
+nssm set lan-paste AppExit Default Restart
+nssm set lan-paste AppStdout G:\GitHub\lan-text-forward\logs\lan-paste.log
+nssm set lan-paste AppStderr G:\GitHub\lan-text-forward\logs\lan-paste-error.log
+nssm set lan-paste AppRotateFiles 1
+nssm set lan-paste AppRotateSeconds 86400
+nssm set lan-paste AppRotateBytes 1048576
+nssm set lan-paste AppThrottle 5000
+nssm set lan-paste AppEnvironmentExtra "NODE_ENV=production"
+
+REM 3. 启动
+nssm start lan-paste
+```
+
+配置说明：
+
+| 参数 | 作用 |
+|---|---|
+| `Start SERVICE_AUTO_START` | 开机自启 |
+| `AppExit Default Restart` | 进程退出时自动重启 |
+| `AppThrottle 5000` | 两次重启之间至少间隔 5 秒（防止 crash-loop） |
+| `AppRotateFiles 1` | 启用日志轮转 |
+| `AppRotateSeconds 86400` | 每天轮转一次 |
+| `AppRotateBytes 1048576` | 或超过 1 MB 时轮转 |
+| `AppEnvironmentExtra` | 注入环境变量到服务进程 |
+
 ### 4. 验证
 
 ```powershell
