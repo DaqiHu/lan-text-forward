@@ -23,10 +23,10 @@ $projectRoot = Resolve-Path "$scriptDir\..\.."
 
 # ── 工具函数 ────────────────────────────────────────────────
 
-function Write-Step { param([string]$Text) Write-Host "› $Text" -ForegroundColor Cyan }
-function Write-OK   { param([string]$Text) Write-Host "  ✓ $Text" -ForegroundColor Green }
-function Write-Warn { param([string]$Text) Write-Host "  ⚠ $Text" -ForegroundColor Yellow }
-function Write-Err  { param([string]$Text) Write-Host "  ✗ $Text" -ForegroundColor Red }
+function Write-Step { param([string]$Text) Write-Host "> $Text" -ForegroundColor Cyan }
+function Write-OK   { param([string]$Text) Write-Host "  OK  $Text" -ForegroundColor Green }
+function Write-Warn { param([string]$Text) Write-Host "  WARN $Text" -ForegroundColor Yellow }
+function Write-Err  { param([string]$Text) Write-Host "  ERR $Text" -ForegroundColor Red }
 
 # ── 0. 确保 nssm.exe 可用 ───────────────────────────────────
 
@@ -88,12 +88,14 @@ foreach ($svc in $enabled) {
 
     # 日志路径
     $logDir = Join-Path $projectRoot "logs"
-    if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+    if (-not (Test-Path $logDir)) {
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    }
     $stdoutLog = Join-Path $logDir "$name.log"
     $stderrLog = Join-Path $logDir "$name-error.log"
 
-    # 检查是否已安装（已安装则用 set update）
-    $existing = & $nssmExe status $name 2>$null
+    # 检查是否已安装
+    $null = & $nssmExe status $name 2>&1
     $isInstalled = ($LASTEXITCODE -eq 0)
 
     if (-not $isInstalled) {
@@ -104,24 +106,22 @@ foreach ($svc in $enabled) {
             continue
         }
     } else {
-        Write-Host "  Service already exists — updating configuration..."
+        Write-Host "  Service already exists - updating configuration..."
     }
 
     # 设置服务属性
-    $set = { param($k, $v) & $nssmExe set $name $k $v 2>&1 | Out-Null }
-
-    & $set "DisplayName" $displayName
-    & $set "Description" $description
-    & $set "AppDirectory" $projectRoot
-    & $set "Start" "SERVICE_AUTO_START"          # 开机自启
-    & $set "AppExit" "Default" "Restart"         # 崩溃自动重启
-    & $set "AppStdout" $stdoutLog
-    & $set "AppStderr" $stderrLog
-    & $set "AppRotateFiles" 1                    # 日志轮转
-    & $set "AppRotateSeconds" 86400              # 每天轮转一次
-    & $set "AppRotateBytes" 1048576              # 或超过 1 MB 时轮转
-    & $set "AppThrottle" 5000                    # 重启间隔 ≥ 5 秒（防止 crash-loop）
-    & $set "AppEnvironmentExtra" "NODE_ENV=production"
+    & $nssmExe set $name DisplayName $displayName 2>&1 | Out-Null
+    & $nssmExe set $name Description $description 2>&1 | Out-Null
+    & $nssmExe set $name AppDirectory $projectRoot 2>&1 | Out-Null
+    & $nssmExe set $name Start SERVICE_AUTO_START 2>&1 | Out-Null
+    & $nssmExe set $name AppExit Default Restart 2>&1 | Out-Null
+    & $nssmExe set $name AppStdout $stdoutLog 2>&1 | Out-Null
+    & $nssmExe set $name AppStderr $stderrLog 2>&1 | Out-Null
+    & $nssmExe set $name AppRotateFiles 1 2>&1 | Out-Null
+    & $nssmExe set $name AppRotateSeconds 86400 2>&1 | Out-Null
+    & $nssmExe set $name AppRotateBytes 1048576 2>&1 | Out-Null
+    & $nssmExe set $name AppThrottle 5000 2>&1 | Out-Null
+    & $nssmExe set $name AppEnvironmentExtra "NODE_ENV=production" 2>&1 | Out-Null
 
     Write-OK "Configuration done"
 
@@ -132,17 +132,19 @@ foreach ($svc in $enabled) {
 
     # 验证状态
     $status = & $nssmExe status $name
-    switch ($status) {
-        "SERVICE_RUNNING" { Write-OK "Status: RUNNING" }
-        "SERVICE_START_PENDING" { Write-OK "Status: START_PENDING (稍等几秒)" }
-        default { Write-Warn "Status: $status — check logs: logs\$name-error.log" }
+    if ($status -eq "SERVICE_RUNNING") {
+        Write-OK "Status: RUNNING"
+    } elseif ($status -eq "SERVICE_START_PENDING") {
+        Write-OK "Status: START_PENDING (give it a few seconds)"
+    } else {
+        Write-Warn "Status: $status - check logs: logs\$name-error.log"
     }
 }
 
 # ── 3. 汇总 ─────────────────────────────────────────────────
 
 Write-Host ""
-Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "==============================================" -ForegroundColor Cyan
 Write-Host "  Installation complete." -ForegroundColor Green
 Write-Host ""
 Write-Host "  Manage services:" -ForegroundColor White
@@ -154,4 +156,4 @@ Write-Host "    services.msc          (GUI)" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Check logs:" -ForegroundColor White
 Write-Host "    Get-Content logs\lan-paste.log -Tail 50" -ForegroundColor Gray
-Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "==============================================" -ForegroundColor Cyan

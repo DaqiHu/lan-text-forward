@@ -4,8 +4,12 @@
   "description": "局域网快传粘贴服务 - 手机打字，电脑粘贴",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "dev:client": "npm run dev --prefix client",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "build:client": "npm run build --prefix client",
+    "start": "node dist/server.js",
+    "test": "npm run test:run --prefix client",
+    "test:watch": "npm run test --prefix client"
   },
   "dependencies": {
     "clipboardy": "^3.0.0",

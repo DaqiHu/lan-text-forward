@@ -246,6 +246,52 @@ lan-text-forward/
   logs/                   # 运行日志
 ```
 
+## 复用到其他仓库
+
+这套 NSSM 服务管理模式是**零依赖、可移植**的。要在另一个 Node.js 项目中使用，复制以下文件并做最小修改：
+
+### 需要复制的文件
+
+```
+scripts/nssm/
+  install.ps1             ← 直接复制，无需修改
+  uninstall.ps1           ← 直接复制，无需修改
+  status.ps1              ← 直接复制，无需修改
+  services.json           ← 编辑：改掉 services 列表
+  launchers/
+    <your-service>.bat    ← 新建：一个服务一个 .bat
+```
+
+外加：从 https://nssm.cc/download 下载 `nssm.exe` 放到 `scripts/nssm/` 下。
+
+### 适配步骤
+
+1. **复制** `scripts/nssm/` 目录到新仓库
+2. **编辑** `services.json`，将 `services` 数组替换为你的服务列表
+3. **新建** `launchers/<your-name>.bat`，写清楚如何启动你的 app（设置环境变量 → cd 到项目根 → 执行启动命令）
+4. **运行** `.\scripts\nssm\install.ps1`（管理员 PowerShell）
+
+### launcher .bat 模板
+
+```batch
+@echo off
+set NODE_ENV=production
+set PORT=3000                           # 你的端口
+set PATH=C:\Program Files\nodejs;%PATH%
+cd /d %~dp0..\..\.                      # 回到项目根目录
+node dist\server.js                     # 你的启动命令
+```
+
+`%~dp0..\..\..` 的含义：`%~dp0` = launcher 所在目录 → `..` 三次回到项目根。如果你的目录结构与 `scripts/nssm/launchers/` 不同，调整 `..` 数量即可。
+
+### 不需要的东西
+
+- ❌ 不需要 `npm install -g pm2`
+- ❌ 不需要设 `PM2_HOME` 环境变量
+- ❌ 不需要改 npm 全局 prefix
+- ❌ 不需要改 PowerShell 执行策略
+- ✅ 只需要一个 ~500KB 的 `nssm.exe`
+
 ## 技术栈
 
 | 层 | 技术 |
