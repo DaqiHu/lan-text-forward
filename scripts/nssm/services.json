@@ -6,7 +6,10 @@
       "name": "lan-paste",
       "displayName": "LAN Paste Service",
       "description": "局域网快传粘贴服务 — 手机打字，电脑粘贴 (port 18765)",
-      "launcher": "launchers\\lan-paste.bat",
+      "script": "dist/server.js",
+      "env": {
+        "NODE_ENV": "production"
+      },
       "enabled": true
     }
   ]

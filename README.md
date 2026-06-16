@@ -150,13 +150,14 @@ npm run build
 
 如果不想用自动化脚本，也可以逐条执行 `nssm` 命令。以**管理员身份**打开 CMD 或 PowerShell。
 
-首先确认 nssm 是否已在 PATH 中：
+首先确认 nssm 是否已在 PATH 中，以及 node 的位置：
 
 ```batch
 where nssm
+where node
 ```
 
-如果已输出路径（如 `C:\ProgramData\chocolatey\bin\nssm.exe`），跳过 copy 步骤直接使用。如果没有，安装方式二选一：
+如果 nssm 不在 PATH 中，安装方式二选一：
 
 ```batch
 REM 方式 A: chocolatey（推荐，自动加入 PATH）
@@ -167,14 +168,15 @@ REM   从 https://nssm.cc/download 下载 nssm.exe
 copy scripts\nssm\nssm.exe C:\Windows\System32\
 ```
 
-然后执行：
+确保 `dist/server.js` 已编译（`npm run build`），然后执行：
 
-REM 1. 创建服务
-nssm install lan-paste G:\GitHub\lan-text-forward\scripts\nssm\launchers\lan-paste.bat
+```batch
+REM 1. 创建服务 — 直接调用 node.exe，不经过 .bat
+nssm install lan-paste "C:\Program Files\nodejs\node.exe" dist\server.js
 
 REM 2. 配置服务属性
 nssm set lan-paste DisplayName "LAN Paste Service"
-nssm set lan-paste Description "局域网快传粘贴服务 — 手机打字，电脑粘贴 (port 18765)"
+nssm set lan-paste Description "局域网快传粘贴服务 -- 手机打字，电脑粘贴 (port 18765)"
 nssm set lan-paste AppDirectory G:\GitHub\lan-text-forward
 nssm set lan-paste Start SERVICE_AUTO_START
 nssm set lan-paste AppExit Default Restart
@@ -189,6 +191,8 @@ nssm set lan-paste AppEnvironmentExtra "NODE_ENV=production"
 REM 3. 启动
 nssm start lan-paste
 ```
+
+> **注意**：`node.exe` 的路径可能不同。用 `where node` 查看实际路径，替换上面的 `C:\Program Files\nodejs\node.exe`。
 
 配置说明：
 
@@ -252,7 +256,7 @@ services.msc
 
 ## 更新 / 重装
 
-改了 `services.json` 或 launcher 后，重新运行安装脚本即可：
+改了 `services.json` 后，重新运行安装脚本即可：
 
 ```powershell
 .\scripts\nssm\install.ps1
@@ -268,7 +272,7 @@ services.msc
 
 ## 添加更多服务
 
-在 `services.json` 中加一条，新建对应的 launcher `.bat`，重跑 `install.ps1` 即可。
+在 `services.json` 中加一条，编译入口脚本，重跑 `install.ps1` 即可。
 
 示例：将来要加一个 `lan-file` 文件传输服务：
 
@@ -277,10 +281,16 @@ services.msc
   "name": "lan-file",
   "displayName": "LAN File Service",
   "description": "局域网文件传输服务 (port 18766)",
-  "launcher": "launchers\\lan-file.bat",
+  "script": "dist/file-server.js",
+  "env": {
+    "NODE_ENV": "production",
+    "PORT": "18766"
+  },
   "enabled": true
 }
 ```
+
+`script` 是相对于项目根目录的 Node.js 入口文件路径。`env` 里的键值对会注入为服务进程的环境变量。不需要 `.bat` 文件。
 
 ---
 
@@ -314,31 +324,37 @@ scripts/nssm/
   uninstall.ps1           ← 直接复制，无需修改
   status.ps1              ← 直接复制，无需修改
   services.json           ← 编辑：改掉 services 列表
-  launchers/
-    <your-service>.bat    ← 新建：一个服务一个 .bat
 ```
 
-外加：从 https://nssm.cc/download 下载 `nssm.exe` 放到 `scripts/nssm/` 下。
+外加：从 https://nssm.cc/download 下载 `nssm.exe` 放到 `scripts/nssm/` 下（或 `choco install nssm`）。
 
 ### 适配步骤
 
 1. **复制** `scripts/nssm/` 目录到新仓库
-2. **编辑** `services.json`，将 `services` 数组替换为你的服务列表
-3. **新建** `launchers/<your-name>.bat`，写清楚如何启动你的 app（设置环境变量 → cd 到项目根 → 执行启动命令）
-4. **运行** `.\scripts\nssm\install.ps1`（管理员 PowerShell）
+2. **编辑** `services.json`，将 `services` 数组替换为你的服务列表（每条声明 `name`、`script`、`env` 即可，无需 `.bat` 文件）
+3. **运行** `.\scripts\nssm\install.ps1`（管理员 PowerShell）
 
-### launcher .bat 模板
+### services.json 示例
 
-```batch
-@echo off
-set NODE_ENV=production
-set PORT=3000                           # 你的端口
-set PATH=C:\Program Files\nodejs;%PATH%
-cd /d %~dp0..\..\.                      # 回到项目根目录
-node dist\server.js                     # 你的启动命令
+```json
+{
+  "services": [
+    {
+      "name": "my-app",
+      "displayName": "My App Service",
+      "description": "My app backend (port 3000)",
+      "script": "dist/server.js",
+      "env": {
+        "NODE_ENV": "production",
+        "PORT": "3000"
+      },
+      "enabled": true
+    }
+  ]
+}
 ```
 
-`%~dp0..\..\..` 的含义：`%~dp0` = launcher 所在目录 → `..` 三次回到项目根。如果你的目录结构与 `scripts/nssm/launchers/` 不同，调整 `..` 数量即可。
+`script` 是相对于项目根目录的 Node.js 入口文件。`env` 会自动注入为服务进程的环境变量。
 
 ### 不需要的东西
 

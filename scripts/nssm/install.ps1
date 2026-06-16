@@ -5,16 +5,15 @@
 
 .DESCRIPTION
   读取 services.json，对每个 enabled: true 的服务：
-    1. 检查 nssm.exe 是否就绪（System32 或本地）
-    2. 解析 launcher 的绝对路径
-    3. nssm install（或 update）
-    4. 设置崩溃重启、开机自启、日志轮转
-    5. 启动服务
+    1. 检测 nssm.exe 和 node.exe 是否就绪
+    2. 用 nssm 注册服务，直接调用 node.exe 启动
+    3. 设置崩溃重启、开机自启、日志轮转
+    4. 启动服务
 
 .NOTES
   需要管理员权限（#Requires -RunAsAdministrator）。
   首次运行前：从 https://nssm.cc/download 下载 nssm.exe 放到 scripts/nssm/ 下，
-  本脚本会自动将其复制到 C:\Windows\System32\。
+  或通过 chocolatey 安装: choco install nssm
 #>
 
 $ErrorActionPreference = "Stop"
@@ -33,19 +32,14 @@ function Write-Err  { param([string]$Text) Write-Host "  ERR $Text" -ForegroundC
 $nssmLocal  = Join-Path $scriptDir "nssm.exe"
 $nssmSystem = Join-Path $env:SystemRoot "System32\nssm.exe"
 
-# Priority 1: already on PATH (e.g. chocolatey, manual install)
 $nssmCmd = Get-Command nssm -ErrorAction SilentlyContinue
 if ($nssmCmd) {
     $nssmExe = $nssmCmd.Source
     Write-OK "nssm already on PATH: $nssmExe"
-}
-# Priority 2: in System32
-elseif (Test-Path $nssmSystem) {
+} elseif (Test-Path $nssmSystem) {
     $nssmExe = $nssmSystem
     Write-OK "nssm.exe found in System32"
-}
-# Priority 3: local — copy to System32 so it's globally available
-elseif (Test-Path $nssmLocal) {
+} elseif (Test-Path $nssmLocal) {
     Write-Step "Copying nssm.exe to System32..."
     Copy-Item $nssmLocal $nssmSystem -Force
     $nssmExe = $nssmSystem
@@ -62,6 +56,17 @@ elseif (Test-Path $nssmLocal) {
     Write-Host "  Then re-run this script." -ForegroundColor Yellow
     exit 1
 }
+
+# ── 0.5. 确保 node.exe 可用 ─────────────────────────────────
+
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+if (-not $nodeCmd) {
+    Write-Err "node.exe not found in PATH!"
+    Write-Host "  Install Node.js from https://nodejs.org/ or use nvm-windows." -ForegroundColor Yellow
+    exit 1
+}
+$nodeExe = $nodeCmd.Source
+Write-OK "node.exe: $nodeExe"
 
 # ── 1. 读取配置 ─────────────────────────────────────────────
 
@@ -86,15 +91,17 @@ foreach ($svc in $enabled) {
     $name        = $svc.name
     $displayName = $svc.displayName
     $description = $svc.description
-    $launcherRel = $svc.launcher
-    $launcherAbs = Join-Path $scriptDir $launcherRel
+    $scriptRel   = $svc.script
+    $scriptAbs   = Join-Path $projectRoot $scriptRel
+    $envMap      = $svc.env
 
     Write-Host ""
     Write-Step "Installing [$name]..."
 
-    # 验证 launcher 存在
-    if (-not (Test-Path $launcherAbs)) {
-        Write-Err "Launcher not found: $launcherAbs"
+    # 验证脚本存在
+    if (-not (Test-Path $scriptAbs)) {
+        Write-Err "Script not found: $scriptAbs"
+        Write-Host "  Run 'npm run build' first." -ForegroundColor Yellow
         continue
     }
 
@@ -112,13 +119,16 @@ foreach ($svc in $enabled) {
 
     if (-not $isInstalled) {
         Write-Host "  Creating service..."
-        & $nssmExe install $name $launcherAbs 2>&1 | Out-Null
+        & $nssmExe install $name $nodeExe $scriptAbs 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Err "Failed to install service $name"
             continue
         }
     } else {
         Write-Host "  Service already exists - updating configuration..."
+        # Update the executable path and arguments in case they changed
+        & $nssmExe set $name Application $nodeExe 2>&1 | Out-Null
+        & $nssmExe set $name AppParameters $scriptAbs 2>&1 | Out-Null
     }
 
     # 设置服务属性
@@ -133,7 +143,14 @@ foreach ($svc in $enabled) {
     & $nssmExe set $name AppRotateSeconds 86400 2>&1 | Out-Null
     & $nssmExe set $name AppRotateBytes 1048576 2>&1 | Out-Null
     & $nssmExe set $name AppThrottle 5000 2>&1 | Out-Null
-    & $nssmExe set $name AppEnvironmentExtra "NODE_ENV=production" 2>&1 | Out-Null
+
+    # 注入环境变量
+    if ($envMap) {
+        foreach ($key in $envMap.PSObject.Properties.Name) {
+            $val = $envMap.$key
+            & $nssmExe set $name AppEnvironmentExtra "$key=$val" 2>&1 | Out-Null
+        }
+    }
 
     Write-OK "Configuration done"
 
