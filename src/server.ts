@@ -1,42 +1,39 @@
-import express from 'express';
-import http from 'http';
-import { WebSocketServer, WebSocket } from 'ws';
-import path from 'path';
-import { execSync } from 'child_process';
-import { resolvePort, RATE_LIMIT_MS, MAX_TEXT_LENGTH } from './config';
-import { startDiscovery, DeviceInfo } from './discovery';
-import { doPasteAndRestore } from './paste';
+import express from "express";
+import http from "http";
+import { WebSocketServer, WebSocket } from "ws";
+import path from "path";
+import { execSync } from "child_process";
+import { resolvePort, RATE_LIMIT_MS, MAX_TEXT_LENGTH } from "./config";
+import { startDiscovery, DeviceInfo } from "./discovery";
+import { doPasteAndRestore } from "./paste";
+import { createLogger } from "./logger";
+import { recordPaste, getStats, getRecent, closeTelemetry } from "./telemetry";
 
+const log = createLogger("lan-paste");
 const HTTP_PORT = resolvePort();
 
 const app = express();
 const server = http.createServer(app);
 
-// 静态文件（手机前端）
-app.use(express.static(path.join(__dirname, '..', 'public')));
-
-// JSON 体解析
+app.use(express.static(path.join(__dirname, "..", "public")));
 app.use(express.json());
 
-// 启动设备发现
 const discovery = startDiscovery();
 
-// ─── HTTP API ────────────────────────────────────────────────
+// ── HTTP API ──────────────────────────────────────────────────
 
-/** GET /devices — 返回在线设备列表 */
-app.get('/devices', (_req, res) => {
+app.get("/devices", (_req, res) => {
   res.json({
     selfId: discovery.getSelfId(),
     devices: discovery.getDevices(),
   });
 });
 
-/** POST /paste — 接收其他服务端转发来的粘贴请求（内部接口） */
-app.post('/paste', async (req, res) => {
+app.post("/paste", async (req, res) => {
   const { text } = req.body;
 
-  if (typeof text !== 'string' || text.trim().length === 0) {
-    res.status(400).json({ error: '缺少有效的 text' });
+  if (typeof text !== "string" || text.trim().length === 0) {
+    res.status(400).json({ error: "缺少有效的 text" });
     return;
   }
 
@@ -50,37 +47,40 @@ app.post('/paste', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     const message = (err as Error).message;
-    console.error('[粘贴] 执行失败:', message);
+    log.error({ err: message }, "paste failed");
     res.status(500).json({ error: message });
   }
 });
 
-// ─── WebSocket ────────────────────────────────────────────────
+// ── GET /admin/stats ──────────────────────────────────────────
 
-const wss = new WebSocketServer({ server, path: '/ws' });
+app.get("/admin/stats", (_req, res) => {
+  res.json({ stats: getStats(), recent: getRecent(10) });
+});
 
-/**
- * 向其他服务端转发粘贴请求。
- */
+// ── WebSocket ─────────────────────────────────────────────────
+
+const wss = new WebSocketServer({ server, path: "/ws" });
+
 function forwardPaste(target: DeviceInfo, text: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify({ text });
     const options: http.RequestOptions = {
       hostname: target.ip,
       port: target.port,
-      path: '/paste',
-      method: 'POST',
+      path: "/paste",
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(data),
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(data),
       },
       timeout: 5000,
     };
 
     const req = http.request(options, (res) => {
-      let body = '';
-      res.on('data', (chunk: string) => { body += chunk; });
-      res.on('end', () => {
+      let body = "";
+      res.on("data", (chunk: string) => { body += chunk; });
+      res.on("end", () => {
         if (res.statusCode === 200) {
           resolve();
         } else {
@@ -89,13 +89,12 @@ function forwardPaste(target: DeviceInfo, text: string): Promise<void> {
       });
     });
 
-    req.on('error', (err) => {
+    req.on("error", (err) => {
       reject(new Error(`连接目标失败: ${err.message}`));
     });
-
-    req.on('timeout', () => {
+    req.on("timeout", () => {
       req.destroy();
-      reject(new Error('连接目标超时'));
+      reject(new Error("连接目标超时"));
     });
 
     req.write(data);
@@ -103,90 +102,87 @@ function forwardPaste(target: DeviceInfo, text: string): Promise<void> {
   });
 }
 
-wss.on('connection', (ws: WebSocket) => {
-  console.log('[WS] 手机已连接');
+wss.on("connection", (ws: WebSocket) => {
+  log.info("WS client connected");
 
   let lastPasteTime = 0;
 
-  ws.on('message', async (raw: Buffer) => {
-    // 解析消息
-    let data: { targetId?: string; text?: string };
+  ws.on("message", async (raw: Buffer) => {
+    let msg: { targetId?: string; text?: string };
     try {
-      data = JSON.parse(raw.toString());
+      msg = JSON.parse(raw.toString());
     } catch {
-      ws.send(JSON.stringify({ type: 'error', message: '消息格式错误' }));
+      ws.send(JSON.stringify({ type: "error", message: "消息格式错误" }));
       return;
     }
 
-    const { targetId, text } = data;
+    const { targetId, text } = msg;
 
-    if (typeof text !== 'string' || text.trim().length === 0) {
-      return;
-    }
+    if (typeof text !== "string" || text.trim().length === 0) return;
 
     if (text.length > MAX_TEXT_LENGTH) {
-      ws.send(JSON.stringify({ type: 'error', message: `文本过长（最大 ${MAX_TEXT_LENGTH} 字符）` }));
+      ws.send(JSON.stringify({ type: "error", message: `文本过长（最大 ${MAX_TEXT_LENGTH} 字符）` }));
       return;
     }
 
-    // 频率限制
     const now = Date.now();
     if (now - lastPasteTime < RATE_LIMIT_MS) {
-      ws.send(JSON.stringify({ type: 'error', message: '操作太频繁，请稍候' }));
+      ws.send(JSON.stringify({ type: "error", message: "操作太频繁，请稍候" }));
       return;
     }
     lastPasteTime = now;
 
-    // 查找目标设备
     const devices = discovery.getDevices();
     const target = devices.find((d) => d.id === targetId);
     if (!target) {
-      ws.send(JSON.stringify({ type: 'error', message: '目标设备离线或不存在' }));
+      ws.send(JSON.stringify({ type: "error", message: "目标设备离线或不存在" }));
       return;
     }
 
     const selfId = discovery.getSelfId();
+    const t0 = performance.now();
 
     if (target.id === selfId) {
-      // ── 本机粘贴 ──
       try {
         await doPasteAndRestore(text);
-        ws.send(JSON.stringify({ type: 'success', message: '已粘贴到本机' }));
+        const dur = Math.round(performance.now() - t0);
+        log.info({ textLen: text.length, duration_ms: dur }, "paste to self ok");
+        recordPaste({ duration_ms: dur, text_length: text.length, status: "ok", target: "self" });
+        ws.send(JSON.stringify({ type: "success", message: "已粘贴到本机" }));
       } catch (err) {
-        ws.send(JSON.stringify({ type: 'error', message: (err as Error).message }));
+        const dur = Math.round(performance.now() - t0);
+        const message = (err as Error).message;
+        log.error({ err: message, textLen: text.length, duration_ms: dur }, "paste to self failed");
+        recordPaste({ duration_ms: dur, text_length: text.length, status: "error", error: message, target: "self" });
+        ws.send(JSON.stringify({ type: "error", message }));
       }
     } else {
-      // ── 转发到其他设备 ──
       try {
         await forwardPaste(target, text);
-        ws.send(JSON.stringify({
-          type: 'success',
-          message: `已粘贴到 ${target.hostname}`,
-        }));
+        const dur = Math.round(performance.now() - t0);
+        log.info({ target: target.hostname, textLen: text.length, duration_ms: dur }, "paste to remote ok");
+        recordPaste({ duration_ms: dur, text_length: text.length, status: "ok", target: "remote" });
+        ws.send(JSON.stringify({ type: "success", message: `已粘贴到 ${target.hostname}` }));
       } catch (err) {
-        ws.send(JSON.stringify({ type: 'error', message: (err as Error).message }));
+        const dur = Math.round(performance.now() - t0);
+        const message = (err as Error).message;
+        log.error({ err: message, target: target.hostname, duration_ms: dur }, "paste to remote failed");
+        recordPaste({ duration_ms: dur, text_length: text.length, status: "error", error: message, target: "remote" });
+        ws.send(JSON.stringify({ type: "error", message }));
       }
     }
   });
 
-  ws.on('close', () => {
-    console.log('[WS] 手机断开');
+  ws.on("close", () => {
+    log.info("WS client disconnected");
   });
 
-  ws.on('error', (err) => {
-    console.error('[WS] 连接错误:', err.message);
+  ws.on("error", (err) => {
+    log.error({ err: err.message }, "WS connection error");
   });
 });
 
-// ─── 防火墙自检 ───────────────────────────────────────────────
-
-function printFirewallHelp(): void {
-  console.log('─────────────────────────────────────────────────────');
-  console.log('  如需从其他设备访问，请添加防火墙入站规则：');
-  console.log(`  netsh advfirewall firewall add rule name="lan-paste"`);
-  console.log(`    dir=in protocol=tcp localport=${HTTP_PORT} action=allow`);
-  console.log('─────────────────────────────────────────────────────');
-}
+// ── Firewall ──────────────────────────────────────────────────
 
 function trySetupFirewall(): void {
   try {
@@ -194,43 +190,35 @@ function trySetupFirewall(): void {
       `netsh advfirewall firewall add rule name="lan-paste (TCP ${HTTP_PORT})" `
       + `dir=in protocol=tcp localport=${HTTP_PORT} action=allow `
       + `profile=domain,private description="Allow LAN paste service"`,
-      { stdio: 'pipe', timeout: 5000 },
+      { stdio: "pipe", timeout: 5000 },
     );
-    console.log('[防火墙] 入站规则已添加');
+    log.info("firewall rule added");
   } catch {
-    printFirewallHelp();
+    log.warn({ port: HTTP_PORT }, "firewall rule could not be added (run as admin to auto-configure)");
   }
 }
 
-// ─── 启动 ────────────────────────────────────────────────────
+// ── Startup ───────────────────────────────────────────────────
 
-server.on('error', (err: NodeJS.ErrnoException) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`[错误] 端口 ${HTTP_PORT} 已被占用，请使用 PORT=xxxxx 指定其他端口`);
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    log.error({ port: HTTP_PORT }, "port already in use");
     process.exit(1);
   }
-  console.error('[错误] 服务启动失败:', err.message);
+  log.error({ err: err.message }, "server startup failed");
   process.exit(1);
 });
 
-server.listen(HTTP_PORT, '0.0.0.0', () => {
-  const { networkInterfaces } = require('os');
-  const nets = networkInterfaces();
-  console.log('═══════════════════════════════════════════');
-  console.log('  局域网快传粘贴服务已启动');
+server.listen(HTTP_PORT, "0.0.0.0", () => {
+  log.info({ port: HTTP_PORT }, "lan-paste server started");
+  console.log("═══════════════════════════════════════════");
+  console.log("  局域网快传粘贴服务已启动");
   console.log(`  端口: ${HTTP_PORT}`);
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name] ?? []) {
-      if (net.family === 'IPv4' && !net.internal) {
-        console.log(`  地址: http://${net.address}:${HTTP_PORT}`);
-      }
-    }
-  }
-  console.log('═══════════════════════════════════════════');
-  console.log('  手机浏览器访问上述地址即可使用');
-  console.log('  提示：按 Ctrl+C 停止服务');
-  console.log('  PORT=xxxxx 可更换端口');
-  console.log('═══════════════════════════════════════════');
-
+  console.log("═══════════════════════════════════════════");
   trySetupFirewall();
 });
+
+// ── Cleanup ───────────────────────────────────────────────────
+
+process.on("SIGINT", () => { closeTelemetry(); process.exit(0); });
+process.on("SIGTERM", () => { closeTelemetry(); process.exit(0); });

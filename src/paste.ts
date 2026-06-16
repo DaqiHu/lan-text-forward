@@ -1,8 +1,14 @@
-import clipboardy from 'clipboardy';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import { platform } from 'os';
-import { PASTE_PAUSE_MS, PASTE_RESTORE_DELAY_MS } from './config';
+import clipboardy from "clipboardy";
+import { exec } from "child_process";
+import { promisify } from "util";
+import { platform } from "os";
+import { PASTE_PAUSE_MS, PASTE_RESTORE_DELAY_MS } from "./config";
+
+// 轻量 logger — 不引入 pino 依赖，用 process.stderr 写 JSON
+function logError(obj: Record<string, unknown>, msg: string): void {
+  const entry = { level: 50, time: Date.now(), name: "paste", ...obj, msg };
+  process.stderr.write(JSON.stringify(entry) + "\n");
+}
 
 const execAsync = promisify(exec);
 
@@ -97,7 +103,7 @@ export async function doPasteAndRestore(text: string): Promise<void> {
         await clipboardy.write(original);
       }
     } catch (err) {
-      console.error('[粘贴] 恢复剪贴板失败:', (err as Error).message);
+      logError({ err: (err as Error).message }, "clipboard restore failed");
     }
   }
 }
