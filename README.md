@@ -254,6 +254,24 @@ nssm restart lan-paste     # 再重启
 services.msc
 ```
 
+## 启停与开机自启
+
+```powershell
+# 临时停止（下次开机仍会自启）
+nssm stop lan-paste
+
+# 临时启动
+nssm start lan-paste
+
+# 禁止开机自启
+nssm set lan-paste Start SERVICE_DEMAND_START
+
+# 恢复开机自启
+nssm set lan-paste Start SERVICE_AUTO_START
+```
+
+`nssm stop` 只管当前进程，不影响开机自启设置。
+
 ## 更新 / 重装
 
 改了 `services.json` 后，重新运行安装脚本即可：
