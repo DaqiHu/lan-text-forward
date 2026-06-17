@@ -5,24 +5,29 @@
 ## 工作原理
 
 ```
-┌──────────────┐     WebSocket / HTTP     ┌──────────────────┐
-│  手机浏览器    │ ◄──────────────────────► │  电脑（本服务）    │
-│  (Web 前端)   │                          │  Express + WS    │
-└──────────────┘                          │  UDP 多播发现     │
-                                          │  剪贴板 + 模拟按键 │
-                                          └──────────────────┘
-                                                  │
-                                                  │ HTTP POST /paste
-                                                  ▼
-                                          ┌──────────────────┐
-                                          │  局域网内其他电脑   │
-                                          │  （同样运行本服务） │
-                                          └──────────────────┘
+┌──────────────┐     WebSocket     ┌──────────────────────┐
+│  手机浏览器    │ ◄──────────────► │  NSSM 服务 (开机自启) │
+│  (Web 前端)   │                  │  Express + WS        │
+└──────────────┘                  │  UDP 多播发现         │
+                                  │  转发到其他设备        │
+                                  └──────┬───────────────┘
+                                         │ 内部 WS (/internal)
+                                         ▼
+                                  ┌──────────────────────┐
+                                  │  paste-helper 进程    │
+                                  │  (用户桌面 Session)    │
+                                  │  剪贴板 + 模拟按键     │
+                                  └──────────────────────┘
 ```
 
+服务分为两个进程：
+- **Server**（NSSM 服务，Session 0）：网络服务、设备发现、请求转发。**不需要桌面权限**。
+- **Helper**（用户启动文件夹，Session 1）：连接 Server 的内部 WebSocket，收到粘贴指令后在桌面执行剪贴板写入 + Ctrl+V + Enter。**有完整的桌面权限**。
+
+手机发来的粘贴到本机的请求，Server 通过内部 WS 委托给 Helper 执行，绕过了 Windows 服务的 Session 0 隔离限制。
+
 - **设备发现**：UDP 多播自动发现局域网内所有运行本服务的设备
-- **WebSocket**：手机浏览器与服务端保持长连接
-- **文本转发**：手机选择目标电脑 → 文本写入剪贴板 → 模拟 Ctrl+V + Enter 粘贴发送
+- **文本转发**：手机选择目标电脑 → Server 判断是否本机 → Helper 执行粘贴
 - **剪贴板保护**：粘贴完成后自动恢复原始剪贴板内容
 
 ## 快速开始
@@ -272,6 +277,33 @@ nssm set lan-paste Start SERVICE_AUTO_START
 
 `nssm stop` 只管当前进程，不影响开机自启设置。
 
+## 粘贴 Helper（解决 Session 0 权限问题）
+
+NSSM 服务运行在 Session 0，无权操作桌面剪贴板和模拟按键。因此需要一个
+**Helper 进程**在用户桌面 Session 中执行粘贴操作。
+
+Helper 连接 Server 的内部 WebSocket（`/internal`），等待粘贴指令并执行。
+
+### 安装 Helper
+
+```powershell
+# 注册到启动文件夹（管理员不需要，当前用户即可）
+powershell -ExecutionPolicy Bypass -File scripts/register-helper.ps1
+
+# 立即启动（下次开机自动运行）
+node dist/helper.js
+```
+
+### 验证 Helper 是否在线
+
+```powershell
+# 查看日志 — 正常应有 "paste helper connected"
+Get-Content C:\ProgramData\lan-paste\logs\lan-paste.1.log -Tail 5 | findstr helper
+```
+
+如果日志显示 `paste helper connected`，说明架构正常。手机发送时
+日志会显示 `paste to self ok (via helper)`。
+
 ## 更新 / 重装
 
 改了 `services.json` 后，重新运行安装脚本即可：
@@ -309,6 +341,24 @@ nssm set lan-paste Start SERVICE_AUTO_START
 ```
 
 `script` 是相对于项目根目录的 Node.js 入口文件路径。`env` 里的键值对会注入为服务进程的环境变量。不需要 `.bat` 文件。
+
+---
+
+## 测试
+
+```bash
+# 前端测试（React 组件）
+pnpm test
+
+# 服务端测试（Helper ↔ Server WS 架构）
+pnpm test:server
+```
+
+服务端测试覆盖：
+- Helper 连接 / 断开跟踪
+- 粘贴指令委托 & 成功响应
+- 错误响应传递
+- 多个 Helper 并发连接
 
 ---
 
