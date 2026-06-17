@@ -2,11 +2,10 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 
-const DATA_DIR = process.env.DATA_DIR || resolveDefaultDataDir();
 const NODE_ENV = process.env.NODE_ENV || "development";
 
 function resolveDefaultDataDir(): string {
-  if (DATA_DIR) return path.resolve(DATA_DIR);
+  if (process.env.DATA_DIR) return path.resolve(process.env.DATA_DIR!);
   const isProd = NODE_ENV === "production";
   if (isProd) {
     const programData =

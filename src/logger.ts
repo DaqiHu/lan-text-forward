@@ -3,7 +3,6 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 
-const LOG_DIR = process.env.LOGS_DIR || resolveDefaultLogDir();
 const NODE_ENV = process.env.NODE_ENV || "development";
 
 function resolveDefaultLogDir(): string {
@@ -16,6 +15,8 @@ function resolveDefaultLogDir(): string {
   }
   return path.join(process.cwd(), "logs");
 }
+
+const LOG_DIR = process.env.LOGS_DIR || resolveDefaultLogDir();
 
 /**
  * pino logger factory.
