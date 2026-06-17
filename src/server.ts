@@ -28,18 +28,27 @@ interface PendingJob {
   text: string;
   resolve: (result: { success: boolean; error?: string }) => void;
   timer: NodeJS.Timeout;
+  dispatched: boolean; // 已分发给 helper，防止重复 pull
 }
 
 const pendingJobs = new Map<string, PendingJob>();
 
 // Helper 轮询：获取待处理的粘贴任务
 app.get("/internal/pull", (_req, res) => {
-  const entry = pendingJobs.entries().next();
-  if (entry.done || !entry.value) {
+  // 找第一个未分发的 job
+  let found: [string, PendingJob] | undefined;
+  for (const entry of pendingJobs) {
+    if (!entry[1].dispatched) {
+      found = entry;
+      break;
+    }
+  }
+  if (!found) {
     res.json({ type: "idle" });
     return;
   }
-  const [requestId, job] = entry.value;
+  const [requestId, job] = found;
+  job.dispatched = true;
   // 重置超时 — helper 有 30 秒执行
   clearTimeout(job.timer);
   job.timer = setTimeout(() => {
@@ -87,7 +96,7 @@ function delegatePaste(
       resolve({ success: false, error: "粘贴 Helper 响应超时" });
     }, timeoutMs);
 
-    pendingJobs.set(requestId, { requestId, text, resolve, timer });
+    pendingJobs.set(requestId, { requestId, text, resolve, timer, dispatched: false });
     log.info({ requestId, textLen: text.length, queueSize: pendingJobs.size }, "paste job queued for helper");
   });
 }
