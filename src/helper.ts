@@ -16,7 +16,7 @@ const RECONNECT_MS = 3000;
 let ws: WebSocket | null = null;
 
 function connect(): void {
-  ws = new WebSocket(SERVER_URL);
+  ws = new WebSocket(SERVER_URL, { perMessageDeflate: false });
 
   ws.on("open", () => {
     console.log("[helper] connected to lan-paste server");
