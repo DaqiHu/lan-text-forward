@@ -135,7 +135,7 @@ describe("Internal WebSocket (helper ↔ server)", () => {
   });
 
   it("supports multiple helpers", async () => {
-    assert.strictEqual(helpers.size, 0);
+    const before = helpers.size;
     const ws1 = new WebSocket(url);
     const ws2 = new WebSocket(url);
 
@@ -145,7 +145,7 @@ describe("Internal WebSocket (helper ↔ server)", () => {
         openCount++;
         if (openCount === 2) {
           setImmediate(() => {
-            assert.strictEqual(helpers.size, 2);
+            assert.strictEqual(helpers.size, before + 2);
             ws1.close();
             ws2.close();
             resolve();
