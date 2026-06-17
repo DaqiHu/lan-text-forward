@@ -135,28 +135,29 @@ describe("Internal WebSocket (helper ↔ server)", () => {
   });
 
   it("supports multiple helpers", async () => {
-    const before = helpers.size;
+    // Connect first helper
     const ws1 = new WebSocket(url);
-    const ws2 = new WebSocket(url);
-
     await new Promise<void>((resolve, reject) => {
-      let openCount = 0;
-      const check = () => {
-        openCount++;
-        if (openCount === 2) {
-          setImmediate(() => {
-            assert.strictEqual(helpers.size, before + 2);
-            ws1.close();
-            ws2.close();
-            resolve();
-          });
-        }
-      };
-      ws1.on("open", check);
-      ws2.on("open", check);
+      ws1.on("open", () => {
+        assert.ok(helpers.has(ws1));
+        resolve();
+      });
       ws1.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 2000);
+    });
+
+    // Connect second helper (should coexist)
+    const ws2 = new WebSocket(url);
+    await new Promise<void>((resolve, reject) => {
+      ws2.on("open", () => {
+        assert.ok(helpers.has(ws1));
+        assert.ok(helpers.has(ws2));
+        ws1.close();
+        ws2.close();
+        resolve();
+      });
       ws2.on("error", reject);
-      setTimeout(() => reject(new Error("timeout")), 3000);
+      setTimeout(() => reject(new Error("timeout")), 2000);
     });
   });
 });
