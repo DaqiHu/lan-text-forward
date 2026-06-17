@@ -34,7 +34,6 @@ const pendingJobs = new Map<string, PendingJob>();
 
 // Helper 轮询：获取待处理的粘贴任务
 app.get("/internal/pull", (_req, res) => {
-  // 取出第一个待处理任务
   const entry = pendingJobs.entries().next();
   if (entry.done || !entry.value) {
     res.json({ type: "idle" });
@@ -43,6 +42,7 @@ app.get("/internal/pull", (_req, res) => {
   const [requestId, job] = entry.value;
   pendingJobs.delete(requestId);
   clearTimeout(job.timer);
+  log.info({ requestId, textLen: job.text.length }, "job pulled by helper");
   res.json({ type: "paste", requestId, text: job.text });
 });
 
@@ -61,7 +61,10 @@ app.post("/internal/push", (req, res) => {
   if (job) {
     clearTimeout(job.timer);
     pendingJobs.delete(requestId);
+    log.info({ requestId, success }, "job result received from helper");
     job.resolve({ success: !!success, error });
+  } else {
+    log.warn({ requestId }, "job result for unknown job");
   }
   res.json({ ok: true });
 });
@@ -75,10 +78,12 @@ function delegatePaste(
 
     const timer = setTimeout(() => {
       pendingJobs.delete(requestId);
+      log.warn({ requestId }, "paste job timed out");
       resolve({ success: false, error: "粘贴 Helper 响应超时" });
     }, timeoutMs);
 
     pendingJobs.set(requestId, { requestId, text, resolve, timer });
+    log.info({ requestId, textLen: text.length, queueSize: pendingJobs.size }, "paste job queued for helper");
   });
 }
 
@@ -214,6 +219,8 @@ wss.on("connection", (ws: WebSocket) => {
 
     const selfId = discovery.getSelfId();
     const t0 = performance.now();
+
+    log.info({ target: target.id === selfId ? "self" : target.hostname, textLen: text.length }, "paste request received");
 
     if (target.id === selfId) {
       const result = await delegatePaste(text);

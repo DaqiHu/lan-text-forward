@@ -31,11 +31,7 @@ export default function App() {
     if (lastResponse) {
       addStatus(lastResponse.type, lastResponse.message);
       if (lastResponse.type === 'success') {
-        console.log('[App] clearing text, current:', text);
         setText('');
-      }
-      if (lastResponse.type === 'error') {
-        console.log('[App] error response:', lastResponse.message);
       }
       clearResponse();
     }
