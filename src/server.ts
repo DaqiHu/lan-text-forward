@@ -26,7 +26,11 @@ const discovery = startDiscovery();
 
 const helpers = new Set<WebSocket>();
 
-const internalWss = new WebSocketServer({ server, path: "/internal" });
+const internalWss = new WebSocketServer({
+  server,
+  path: "/internal",
+  perMessageDeflate: false,
+});
 internalWss.on("connection", (ws: WebSocket) => {
   log.info("paste helper connected");
   helpers.add(ws);
