@@ -27,7 +27,7 @@ describe("Internal HTTP helper protocol", () => {
   let server: http.Server;
   let pendingJobs: Map<
     string,
-    { text: string; timer: NodeJS.Timeout; resolve: (r: unknown) => void }
+    { text: string; timer: NodeJS.Timeout; resolve: (r: unknown) => void; dispatched: boolean }
   >;
   let url: string;
 
@@ -38,14 +38,19 @@ describe("Internal HTTP helper protocol", () => {
       res.setHeader("Content-Type", "application/json");
 
       if (req.method === "GET" && req.url === "/internal/pull") {
-        const entry = pendingJobs.entries().next();
-        if (entry.done || !entry.value) {
+        let found: [string, { text: string; timer: NodeJS.Timeout; resolve: (r: unknown) => void; dispatched: boolean }] | undefined;
+        for (const entry of pendingJobs) {
+          if (!entry[1].dispatched) {
+            found = entry as typeof found;
+            break;
+          }
+        }
+        if (!found) {
           res.end(JSON.stringify({ type: "idle" }));
           return;
         }
-        const [id, job] = entry.value;
-        pendingJobs.delete(id);
-        clearTimeout(job.timer);
+        const [id, job] = found;
+        job.dispatched = true;
         res.end(JSON.stringify({ type: "paste", requestId: id, text: job.text }));
       } else if (req.method === "POST" && req.url === "/internal/push") {
         const body = (await json(req)) as {
@@ -94,7 +99,7 @@ describe("Internal HTTP helper protocol", () => {
           () => resolve({ success: false, error: "timeout" }),
           5000,
         );
-        pendingJobs.set(requestId, { text: "hello", timer, resolve });
+        pendingJobs.set(requestId, { text: "hello", timer, resolve, dispatched: false });
       },
     );
 
@@ -126,7 +131,7 @@ describe("Internal HTTP helper protocol", () => {
           () => resolve({ success: false, error: "timeout" }),
           200,
         );
-        pendingJobs.set(requestId, { text: "x", timer, resolve });
+        pendingJobs.set(requestId, { text: "x", timer, resolve, dispatched: false });
       },
     );
 
@@ -145,5 +150,82 @@ describe("Internal HTTP helper protocol", () => {
     assert.strictEqual(resp.status, 200);
     const body = await resp.json();
     assert.strictEqual(body.ok, true);
+  });
+
+  it("dispatched job is not returned by second pull", async () => {
+    const requestId = "dedup-test";
+    // Create a job manually (dispatched = false)
+    const jobPromise = new Promise<{ success: boolean; error?: string }>(
+      (resolve) => {
+        const timer = setTimeout(
+          () => resolve({ success: false, error: "timeout" }),
+          5000,
+        );
+        pendingJobs.set(requestId, {
+          text: "dedup",
+          timer,
+          resolve,
+          dispatched: false,
+        });
+      },
+    );
+
+    // First pull gets the job
+    const pull1 = await fetch(`${url}/internal/pull`);
+    const job1 = await pull1.json();
+    assert.strictEqual(job1.type, "paste");
+    assert.strictEqual(job1.requestId, requestId);
+
+    // Second pull should NOT get it (dispatched = true)
+    const pull2 = await fetch(`${url}/internal/pull`);
+    const job2 = await pull2.json();
+    assert.strictEqual(job2.type, "idle");
+
+    // Cleanup — push result to resolve the promise
+    await fetch(`${url}/internal/push`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId, success: true }),
+    });
+    await jobPromise;
+  });
+
+  it("push idempotency — second push for same job is silent no-op", async () => {
+    const requestId = "idem-test";
+    const jobPromise = new Promise<{ success: boolean; error?: string }>(
+      (resolve) => {
+        const timer = setTimeout(
+          () => resolve({ success: false, error: "timeout" }),
+          5000,
+        );
+        pendingJobs.set(requestId, {
+          text: "idem",
+          timer,
+          resolve,
+          dispatched: true, // simulate already dispatched
+        });
+      },
+    );
+
+    // First push resolves
+    const r1 = await fetch(`${url}/internal/push`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId, success: true }),
+    });
+    assert.strictEqual(r1.status, 200);
+
+    // Second push is idempotent (job already deleted by first resolve)
+    const r2 = await fetch(`${url}/internal/push`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId, success: true }),
+    });
+    assert.strictEqual(r2.status, 200);
+    const r2body = await r2.json();
+    assert.strictEqual(r2body.ok, true);
+
+    const result = await jobPromise;
+    assert.strictEqual(result.success, true);
   });
 });

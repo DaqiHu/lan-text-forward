@@ -60,7 +60,7 @@ app.get("/internal/pull", (_req, res) => {
   res.json({ type: "paste", requestId, text: job.text });
 });
 
-// Helper 回传：粘贴结果
+// Helper 回传：粘贴结果（幂等——同一个 requestId 多次 push 只有第一次生效）
 app.post("/internal/push", (req, res) => {
   const { requestId, success, error } = req.body as {
     requestId?: string;
@@ -72,14 +72,16 @@ app.post("/internal/push", (req, res) => {
     return;
   }
   const job = pendingJobs.get(requestId);
-  if (job) {
-    clearTimeout(job.timer);
-    pendingJobs.delete(requestId);
-    log.info({ requestId, success }, "job result received from helper");
-    job.resolve({ success: !!success, error });
-  } else {
-    log.warn({ requestId }, "job result for unknown job");
+  if (!job) {
+    // 二次 push 或已超时删除 — 静默忽略
+    log.info({ requestId }, "push for unknown/duplicate job (ignored)");
+    res.json({ ok: true });
+    return;
   }
+  clearTimeout(job.timer);
+  pendingJobs.delete(requestId);
+  log.info({ requestId, success }, "job result received from helper");
+  job.resolve({ success: !!success, error });
   res.json({ ok: true });
 });
 
