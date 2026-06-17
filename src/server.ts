@@ -6,37 +6,50 @@ import { execSync } from "child_process";
 import { resolvePort, RATE_LIMIT_MS, MAX_TEXT_LENGTH } from "./config";
 import { startDiscovery, DeviceInfo } from "./discovery";
 import { doPasteAndRestore } from "./paste";
+import { createLogger } from "./logger";
+import { recordPaste, getStats, getRecent, closeTelemetry } from "./telemetry";
+
+const log = createLogger("lan-paste");
+const HTTP_PORT = resolvePort();
+
+const app = express();
+const server = http.createServer(app);
+
+app.use(express.static(path.join(__dirname, "..", "public")));
+app.use(express.json());
+
+const discovery = startDiscovery();
 
 // ═══ 内部粘贴 Helper 支持 ═══
 // Helper 连到 /internal，Server 把 paste-to-self 委托给它执行。
 // 避免 NSSM 服务在 Session 0 无权操作剪贴板和模拟按键。
 
-const internalWss = new WebSocketServer({ server, path: "/internal" });
 const helpers = new Set<WebSocket>();
 
+const internalWss = new WebSocketServer({ server, path: "/internal" });
 internalWss.on("connection", (ws: WebSocket) => {
   log.info("paste helper connected");
   helpers.add(ws);
-
   ws.on("close", () => {
     helpers.delete(ws);
     log.info("paste helper disconnected");
   });
-
   ws.on("error", (err) => {
     helpers.delete(ws);
     log.error({ err: err.message }, "paste helper error");
   });
 });
 
-/**
- * 通过内部 WS 向 Helper 发送粘贴指令，等待结果。
- * 返回 true/false 表示成功与否。
- */
-function delegatePaste(text: string, timeoutMs = 10000): Promise<{ success: boolean; error?: string }> {
+function delegatePaste(
+  text: string,
+  timeoutMs = 10000,
+): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
     if (helpers.size === 0) {
-      resolve({ success: false, error: "没有可用的粘贴 Helper（请确保已启动 helper 进程）" });
+      resolve({
+        success: false,
+        error: "没有可用的粘贴 Helper（请确保已启动 helper 进程）",
+      });
       return;
     }
 
@@ -59,28 +72,16 @@ function delegatePaste(text: string, timeoutMs = 10000): Promise<{ success: bool
           clearTimeout(timer);
           resolve({ success: reply.success === true, error: reply.error });
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore malformed */
+      }
     };
 
-    // 选第一个可用 helper
     const helper = helpers.values().next().value as WebSocket;
     helper.once("message", onMessage);
     helper.send(payload);
   });
 }
-import { createLogger } from "./logger";
-import { recordPaste, getStats, getRecent, closeTelemetry } from "./telemetry";
-
-const log = createLogger("lan-paste");
-const HTTP_PORT = resolvePort();
-
-const app = express();
-const server = http.createServer(app);
-
-app.use(express.static(path.join(__dirname, "..", "public")));
-app.use(express.json());
-
-const discovery = startDiscovery();
 
 // ── HTTP API ──────────────────────────────────────────────────
 
@@ -100,7 +101,9 @@ app.post("/paste", async (req, res) => {
   }
 
   if (text.length > MAX_TEXT_LENGTH) {
-    res.status(400).json({ error: `text 过长（最大 ${MAX_TEXT_LENGTH} 字节）` });
+    res
+      .status(400)
+      .json({ error: `text 过长（最大 ${MAX_TEXT_LENGTH} 字节）` });
     return;
   }
 
@@ -113,8 +116,6 @@ app.post("/paste", async (req, res) => {
     res.status(500).json({ error: message });
   }
 });
-
-// ── GET /admin/stats ──────────────────────────────────────────
 
 app.get("/admin/stats", (_req, res) => {
   res.json({ stats: getStats(), recent: getRecent(10) });
@@ -141,7 +142,9 @@ function forwardPaste(target: DeviceInfo, text: string): Promise<void> {
 
     const req = http.request(options, (res) => {
       let body = "";
-      res.on("data", (chunk: string) => { body += chunk; });
+      res.on("data", (chunk: string) => {
+        body += chunk;
+      });
       res.on("end", () => {
         if (res.statusCode === 200) {
           resolve();
@@ -183,13 +186,20 @@ wss.on("connection", (ws: WebSocket) => {
     if (typeof text !== "string" || text.trim().length === 0) return;
 
     if (text.length > MAX_TEXT_LENGTH) {
-      ws.send(JSON.stringify({ type: "error", message: `文本过长（最大 ${MAX_TEXT_LENGTH} 字符）` }));
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: `文本过长（最大 ${MAX_TEXT_LENGTH} 字符）`,
+        }),
+      );
       return;
     }
 
     const now = Date.now();
     if (now - lastPasteTime < RATE_LIMIT_MS) {
-      ws.send(JSON.stringify({ type: "error", message: "操作太频繁，请稍候" }));
+      ws.send(
+        JSON.stringify({ type: "error", message: "操作太频繁，请稍候" }),
+      );
       return;
     }
     lastPasteTime = now;
@@ -197,7 +207,9 @@ wss.on("connection", (ws: WebSocket) => {
     const devices = discovery.getDevices();
     const target = devices.find((d) => d.id === targetId);
     if (!target) {
-      ws.send(JSON.stringify({ type: "error", message: "目标设备离线或不存在" }));
+      ws.send(
+        JSON.stringify({ type: "error", message: "目标设备离线或不存在" }),
+      );
       return;
     }
 
@@ -205,32 +217,68 @@ wss.on("connection", (ws: WebSocket) => {
     const t0 = performance.now();
 
     if (target.id === selfId) {
-      // 优先委托给桌面 Helper（有剪贴板权限）
       if (helpers.size > 0) {
         const result = await delegatePaste(text);
         const dur = Math.round(performance.now() - t0);
         if (result.success) {
-          log.info({ textLen: text.length, duration_ms: dur }, "paste to self ok (via helper)");
-          recordPaste({ duration_ms: dur, text_length: text.length, status: "ok", target: "self" });
-          ws.send(JSON.stringify({ type: "success", message: "已粘贴到本机" }));
+          log.info(
+            { textLen: text.length, duration_ms: dur },
+            "paste to self ok (via helper)",
+          );
+          recordPaste({
+            duration_ms: dur,
+            text_length: text.length,
+            status: "ok",
+            target: "self",
+          });
+          ws.send(
+            JSON.stringify({ type: "success", message: "已粘贴到本机" }),
+          );
         } else {
-          log.error({ err: result.error, textLen: text.length, duration_ms: dur }, "paste to self failed (helper)");
-          recordPaste({ duration_ms: dur, text_length: text.length, status: "error", error: result.error!, target: "self" });
+          log.error(
+            { err: result.error, textLen: text.length, duration_ms: dur },
+            "paste to self failed (helper)",
+          );
+          recordPaste({
+            duration_ms: dur,
+            text_length: text.length,
+            status: "error",
+            error: result.error!,
+            target: "self",
+          });
           ws.send(JSON.stringify({ type: "error", message: result.error }));
         }
       } else {
-        // 无 Helper — 直接执行（仅在 dev 手动运行时有效，NSSM 下会报 Access Denied）
         try {
           await doPasteAndRestore(text);
           const dur = Math.round(performance.now() - t0);
-          log.info({ textLen: text.length, duration_ms: dur }, "paste to self ok (direct)");
-          recordPaste({ duration_ms: dur, text_length: text.length, status: "ok", target: "self" });
-          ws.send(JSON.stringify({ type: "success", message: "已粘贴到本机" }));
+          log.info(
+            { textLen: text.length, duration_ms: dur },
+            "paste to self ok (direct)",
+          );
+          recordPaste({
+            duration_ms: dur,
+            text_length: text.length,
+            status: "ok",
+            target: "self",
+          });
+          ws.send(
+            JSON.stringify({ type: "success", message: "已粘贴到本机" }),
+          );
         } catch (err) {
           const dur = Math.round(performance.now() - t0);
           const message = (err as Error).message;
-          log.error({ err: message, textLen: text.length, duration_ms: dur }, "paste to self failed (direct)");
-          recordPaste({ duration_ms: dur, text_length: text.length, status: "error", error: message, target: "self" });
+          log.error(
+            { err: message, textLen: text.length, duration_ms: dur },
+            "paste to self failed (direct)",
+          );
+          recordPaste({
+            duration_ms: dur,
+            text_length: text.length,
+            status: "error",
+            error: message,
+            target: "self",
+          });
           ws.send(JSON.stringify({ type: "error", message }));
         }
       }
@@ -238,14 +286,36 @@ wss.on("connection", (ws: WebSocket) => {
       try {
         await forwardPaste(target, text);
         const dur = Math.round(performance.now() - t0);
-        log.info({ target: target.hostname, textLen: text.length, duration_ms: dur }, "paste to remote ok");
-        recordPaste({ duration_ms: dur, text_length: text.length, status: "ok", target: "remote" });
-        ws.send(JSON.stringify({ type: "success", message: `已粘贴到 ${target.hostname}` }));
+        log.info(
+          { target: target.hostname, textLen: text.length, duration_ms: dur },
+          "paste to remote ok",
+        );
+        recordPaste({
+          duration_ms: dur,
+          text_length: text.length,
+          status: "ok",
+          target: "remote",
+        });
+        ws.send(
+          JSON.stringify({
+            type: "success",
+            message: `已粘贴到 ${target.hostname}`,
+          }),
+        );
       } catch (err) {
         const dur = Math.round(performance.now() - t0);
         const message = (err as Error).message;
-        log.error({ err: message, target: target.hostname, duration_ms: dur }, "paste to remote failed");
-        recordPaste({ duration_ms: dur, text_length: text.length, status: "error", error: message, target: "remote" });
+        log.error(
+          { err: message, target: target.hostname, duration_ms: dur },
+          "paste to remote failed",
+        );
+        recordPaste({
+          duration_ms: dur,
+          text_length: text.length,
+          status: "error",
+          error: message,
+          target: "remote",
+        });
         ws.send(JSON.stringify({ type: "error", message }));
       }
     }
@@ -265,14 +335,17 @@ wss.on("connection", (ws: WebSocket) => {
 function trySetupFirewall(): void {
   try {
     execSync(
-      `netsh advfirewall firewall add rule name="lan-paste (TCP ${HTTP_PORT})" `
-      + `dir=in protocol=tcp localport=${HTTP_PORT} action=allow `
-      + `profile=domain,private description="Allow LAN paste service"`,
+      `netsh advfirewall firewall add rule name="lan-paste (TCP ${HTTP_PORT})" ` +
+        `dir=in protocol=tcp localport=${HTTP_PORT} action=allow ` +
+        `profile=domain,private description="Allow LAN paste service"`,
       { stdio: "pipe", timeout: 5000 },
     );
     log.info("firewall rule added");
   } catch {
-    log.warn({ port: HTTP_PORT }, "firewall rule could not be added (run as admin to auto-configure)");
+    log.warn(
+      { port: HTTP_PORT },
+      "firewall rule could not be added (run as admin to auto-configure)",
+    );
   }
 }
 
@@ -296,7 +369,11 @@ server.listen(HTTP_PORT, "0.0.0.0", () => {
   trySetupFirewall();
 });
 
-// ── Cleanup ───────────────────────────────────────────────────
-
-process.on("SIGINT", () => { closeTelemetry(); process.exit(0); });
-process.on("SIGTERM", () => { closeTelemetry(); process.exit(0); });
+process.on("SIGINT", () => {
+  closeTelemetry();
+  process.exit(0);
+});
+process.on("SIGTERM", () => {
+  closeTelemetry();
+  process.exit(0);
+});
