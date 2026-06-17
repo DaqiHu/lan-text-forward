@@ -39,13 +39,15 @@ export function useWebSocket(): UseWebSocketReturn {
     };
 
     ws.onmessage = (event) => {
+      console.log('[WS] raw:', event.data);
       try {
         const msg: WSMessage = JSON.parse(event.data);
+        console.log('[WS] parsed:', msg);
         if (mountedRef.current) {
           setLastResponse(msg);
         }
-      } catch {
-        // Ignore unparseable messages
+      } catch (e) {
+        console.error('[WS] parse error:', e);
       }
     };
 
