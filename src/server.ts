@@ -40,8 +40,13 @@ app.get("/internal/pull", (_req, res) => {
     return;
   }
   const [requestId, job] = entry.value;
-  pendingJobs.delete(requestId);
+  // 重置超时 — helper 有 30 秒执行
   clearTimeout(job.timer);
+  job.timer = setTimeout(() => {
+    pendingJobs.delete(requestId);
+    log.warn({ requestId }, "paste job timed out after pull");
+    job.resolve({ success: false, error: "粘贴 Helper 响应超时" });
+  }, 30000);
   log.info({ requestId, textLen: job.text.length }, "job pulled by helper");
   res.json({ type: "paste", requestId, text: job.text });
 });
