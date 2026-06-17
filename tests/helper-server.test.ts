@@ -1,163 +1,149 @@
 /**
- * Helper & internal WebSocket 架构测试。
+ * Helper HTTP 长轮询架构测试。
  * 运行：pnpm test:server
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
 import http from "node:http";
-import { WebSocketServer, WebSocket } from "ws";
 
-const PORT = 18771;
+const PORT = 18772;
 
-describe("Internal WebSocket (helper ↔ server)", () => {
+function json(req: http.IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (c: string) => (body += c));
+    req.on("end", () => {
+      try {
+        resolve(JSON.parse(body));
+      } catch {
+        resolve({});
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+describe("Internal HTTP helper protocol", () => {
   let server: http.Server;
-  let wss: WebSocketServer;
-  let helpers: Set<WebSocket>;
+  let pendingJobs: Map<
+    string,
+    { text: string; timer: NodeJS.Timeout; resolve: (r: unknown) => void }
+  >;
   let url: string;
 
   before(async () => {
-    server = http.createServer();
-    wss = new WebSocketServer({ server, path: "/internal" });
-    helpers = new Set();
+    pendingJobs = new Map();
 
-    // Server 端行为：跟踪连接，收到 paste 消息后执行 mock 粘贴并回复
-    wss.on("connection", (ws) => {
-      helpers.add(ws);
+    server = http.createServer(async (req, res) => {
+      res.setHeader("Content-Type", "application/json");
 
-      ws.on("message", (raw: Buffer) => {
-        const msg = JSON.parse(raw.toString());
-        if (msg.type === "paste" && msg.requestId) {
-          // mock: 文本长度 < 5 视为失败，否则成功
-          const success = (msg.text as string).length >= 5;
-          ws.send(
-            JSON.stringify({
-              type: "paste-result",
-              requestId: msg.requestId,
-              success,
-              error: success ? undefined : "mock: text too short",
-            }),
-          );
+      if (req.method === "GET" && req.url === "/internal/pull") {
+        const entry = pendingJobs.entries().next();
+        if (entry.done || !entry.value) {
+          res.end(JSON.stringify({ type: "idle" }));
+          return;
         }
-      });
-
-      ws.on("close", () => helpers.delete(ws));
+        const [id, job] = entry.value;
+        pendingJobs.delete(id);
+        clearTimeout(job.timer);
+        res.end(JSON.stringify({ type: "paste", requestId: id, text: job.text }));
+      } else if (req.method === "POST" && req.url === "/internal/push") {
+        const body = (await json(req)) as {
+          requestId?: string;
+          success?: boolean;
+          error?: string;
+        };
+        if (!body.requestId) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: "missing requestId" }));
+          return;
+        }
+        const job = pendingJobs.get(body.requestId);
+        if (job) {
+          clearTimeout(job.timer);
+          pendingJobs.delete(body.requestId);
+          job.resolve({ success: !!body.success, error: body.error });
+        }
+        res.end(JSON.stringify({ ok: true }));
+      } else {
+        res.statusCode = 404;
+        res.end("{}");
+      }
     });
 
     await new Promise<void>((resolve) => server.listen(PORT, resolve));
-    url = `ws://localhost:${PORT}/internal`;
+    url = `http://localhost:${PORT}`;
   });
 
   after(async () => {
-    wss.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
-  it("accepts helper connection", async () => {
-    assert.strictEqual(helpers.size, 0);
-    const ws = new WebSocket(url);
-    await new Promise<void>((resolve, reject) => {
-      ws.on("open", () => {
-        // 给一个 tick 让 server 的 connection handler 跑完
-        setImmediate(() => {
-          assert.strictEqual(helpers.size, 1);
-          ws.close();
-          resolve();
-        });
-      });
-      ws.on("error", reject);
-      setTimeout(() => reject(new Error("timeout")), 2000);
-    });
+  it("GET /internal/pull returns idle when no jobs", async () => {
+    const resp = await fetch(`${url}/internal/pull`);
+    const body = await resp.json();
+    assert.strictEqual(body.type, "idle");
   });
 
-  it("removes helper on disconnect", async () => {
-    const ws = new WebSocket(url);
-    await new Promise<void>((resolve, reject) => {
-      ws.on("open", () => {
-        assert.strictEqual(helpers.size, 1);
-        ws.close();
-      });
-      ws.on("close", () => {
-        setTimeout(() => {
-          assert.strictEqual(helpers.size, 0);
-          resolve();
-        }, 50);
-      });
-      ws.on("error", reject);
-      setTimeout(() => reject(new Error("timeout")), 3000);
+  it("delivers job via pull then receives result via push", async () => {
+    // Server creates a job
+    const requestId = Math.random().toString(36).slice(2);
+    const jobPromise = new Promise<{ success: boolean; error?: string }>(
+      (resolve) => {
+        const timer = setTimeout(
+          () => resolve({ success: false, error: "timeout" }),
+          5000,
+        );
+        pendingJobs.set(requestId, { text: "hello", timer, resolve });
+      },
+    );
+
+    // Helper pulls
+    const pullResp = await fetch(`${url}/internal/pull`);
+    const job = await pullResp.json();
+    assert.strictEqual(job.type, "paste");
+    assert.strictEqual(job.requestId, requestId);
+    assert.strictEqual(job.text, "hello");
+
+    // Helper executes mock paste and pushes result
+    const pushResp = await fetch(`${url}/internal/push`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId, success: true }),
     });
+    assert.strictEqual(pushResp.status, 200);
+
+    // Server job promise resolves
+    const result = await jobPromise;
+    assert.strictEqual(result.success, true);
   });
 
-  it("delegates paste and receives success", async () => {
-    const ws = new WebSocket(url);
-    const requestId = "test-req-1";
+  it("job times out if helper never responds", async () => {
+    const requestId = Math.random().toString(36).slice(2);
+    const jobPromise = new Promise<{ success: boolean; error?: string }>(
+      (resolve) => {
+        const timer = setTimeout(
+          () => resolve({ success: false, error: "timeout" }),
+          200,
+        );
+        pendingJobs.set(requestId, { text: "x", timer, resolve });
+      },
+    );
 
-    await new Promise<void>((resolve, reject) => {
-      ws.on("open", () => {
-        ws.send(JSON.stringify({ type: "paste", text: "hello world", requestId }));
-      });
-
-      ws.on("message", (raw: Buffer) => {
-        const msg = JSON.parse(raw.toString());
-        if (msg.type === "paste-result" && msg.requestId === requestId) {
-          assert.strictEqual(msg.success, true);
-          ws.close();
-          resolve();
-        }
-      });
-
-      ws.on("error", reject);
-      setTimeout(() => reject(new Error("timeout")), 3000);
-    });
+    // Don't pull — job should timeout
+    const result = await jobPromise;
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.error, "timeout");
   });
 
-  it("delegates paste and receives error", async () => {
-    const ws = new WebSocket(url);
-    const requestId = "test-req-2";
-
-    await new Promise<void>((resolve, reject) => {
-      ws.on("open", () => {
-        ws.send(JSON.stringify({ type: "paste", text: "abc", requestId })); // < 5 chars -> fail
-      });
-
-      ws.on("message", (raw: Buffer) => {
-        const msg = JSON.parse(raw.toString());
-        if (msg.type === "paste-result" && msg.requestId === requestId) {
-          assert.strictEqual(msg.success, false);
-          assert.strictEqual(msg.error, "mock: text too short");
-          ws.close();
-          resolve();
-        }
-      });
-
-      ws.on("error", reject);
-      setTimeout(() => reject(new Error("timeout")), 3000);
+  it("push with unknown requestId returns ok", async () => {
+    const resp = await fetch(`${url}/internal/push`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId: "nonexistent", success: true }),
     });
-  });
-
-  it("supports multiple helpers", async () => {
-    // Connect first helper
-    const ws1 = new WebSocket(url);
-    await new Promise<void>((resolve, reject) => {
-      ws1.on("open", () => {
-        assert.ok(helpers.has(ws1));
-        resolve();
-      });
-      ws1.on("error", reject);
-      setTimeout(() => reject(new Error("timeout")), 2000);
-    });
-
-    // Connect second helper (should coexist)
-    const ws2 = new WebSocket(url);
-    await new Promise<void>((resolve, reject) => {
-      ws2.on("open", () => {
-        assert.ok(helpers.has(ws1));
-        assert.ok(helpers.has(ws2));
-        ws1.close();
-        ws2.close();
-        resolve();
-      });
-      ws2.on("error", reject);
-      setTimeout(() => reject(new Error("timeout")), 2000);
-    });
+    assert.strictEqual(resp.status, 200);
+    const body = await resp.json();
+    assert.strictEqual(body.ok, true);
   });
 });

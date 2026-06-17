@@ -1,63 +1,58 @@
 /**
- * 粘贴 Helper — 运行在你的桌面 Session 中（非 NSSM 服务）。
+ * 粘贴 Helper — 通过 HTTP 长轮询与 lan-paste 服务通信。
  *
- * 连接到 lan-paste 服务的内部 WebSocket（localhost:18765/internal），
- * 等待粘贴指令，在桌面 Session 中执行剪贴板写入 + 模拟按键。
- *
- * 启动方式：放入 Windows 启动文件夹（shell:startup），用户登录后自动跑。
- * 或手动：tsx src/helper.ts   /   node dist/helper.js
+ * 运行在用户桌面 Session，有剪贴板和按键权限。
+ * 放到启动文件夹（scripts/register-helper.ps1）实现开机自启。
  */
-import WebSocket from "ws";
 import { doPasteAndRestore } from "./paste";
 
-const SERVER_URL = process.env.HELPER_SERVER || "ws://localhost:18765/internal";
-const RECONNECT_MS = 3000;
+const SERVER = process.env.HELPER_SERVER || "http://localhost:18765";
+const POLL_MS = 500;
 
-let ws: WebSocket | null = null;
-
-function connect(): void {
-  ws = new WebSocket(SERVER_URL, { perMessageDeflate: false });
-
-  ws.on("open", () => {
-    console.log("[helper] connected to lan-paste server");
-  });
-
-  ws.on("message", async (raw: Buffer) => {
-    let msg: { type?: string; text?: string; requestId?: string };
+async function poll(): Promise<void> {
+  while (true) {
     try {
-      msg = JSON.parse(raw.toString());
-    } catch {
-      return;
-    }
+      const pullResp = await fetch(`${SERVER}/internal/pull`);
+      const job = (await pullResp.json()) as {
+        type: string;
+        requestId?: string;
+        text?: string;
+      };
 
-    if (msg.type !== "paste" || !msg.text) return;
-
-    const requestId = msg.requestId || "";
-    console.log(`[helper] paste request (${msg.text.length} chars)`);
-
-    try {
-      await doPasteAndRestore(msg.text);
-      ws?.send(JSON.stringify({ type: "paste-result", requestId, success: true }));
-      console.log("[helper] paste ok");
+      if (job.type === "paste" && job.requestId && job.text) {
+        console.log(`[helper] paste request (${job.text.length} chars)`);
+        try {
+          await doPasteAndRestore(job.text);
+          await fetch(`${SERVER}/internal/push`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId: job.requestId,
+              success: true,
+            }),
+          });
+          console.log("[helper] paste ok");
+        } catch (err) {
+          const message = (err as Error).message;
+          console.error(`[helper] paste failed: ${message}`);
+          await fetch(`${SERVER}/internal/push`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId: job.requestId,
+              success: false,
+              error: message,
+            }),
+          });
+        }
+      }
     } catch (err) {
-      const message = (err as Error).message;
-      ws?.send(JSON.stringify({ type: "paste-result", requestId, success: false, error: message }));
-      console.error(`[helper] paste failed: ${message}`);
+      console.error(`[helper] poll error: ${(err as Error).message}`);
     }
-  });
 
-  ws.on("close", () => {
-    console.log("[helper] disconnected, reconnecting in 3s...");
-    setTimeout(connect, RECONNECT_MS);
-  });
-
-  ws.on("error", (err) => {
-    console.error(`[helper] connection error: ${err.message}`);
-    ws?.close();
-  });
+    await new Promise((r) => setTimeout(r, POLL_MS));
+  }
 }
 
-connect();
-
-// Keep alive
-process.stdin.resume();
+console.log("[helper] starting (HTTP polling mode)...");
+poll();

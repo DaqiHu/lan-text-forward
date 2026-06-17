@@ -20,28 +20,50 @@ app.use(express.json());
 
 const discovery = startDiscovery();
 
-// ═══ 内部粘贴 Helper 支持 ═══
-// Helper 连到 /internal，Server 把 paste-to-self 委托给它执行。
-// 避免 NSSM 服务在 Session 0 无权操作剪贴板和模拟按键。
+// ═══ 内部粘贴 Helper 支持（HTTP 长轮询） ═══
+// Helper 通过 HTTP 端点与服务通信，避免 WebSocket Session 0 压缩问题。
 
-const helpers = new Set<WebSocket>();
+interface PendingJob {
+  requestId: string;
+  text: string;
+  resolve: (result: { success: boolean; error?: string }) => void;
+  timer: NodeJS.Timeout;
+}
 
-const internalWss = new WebSocketServer({
-  server,
-  path: "/internal",
-  perMessageDeflate: false,
+const pendingJobs = new Map<string, PendingJob>();
+
+// Helper 轮询：获取待处理的粘贴任务
+app.get("/internal/pull", (_req, res) => {
+  // 取出第一个待处理任务
+  const entry = pendingJobs.entries().next();
+  if (entry.done || !entry.value) {
+    res.json({ type: "idle" });
+    return;
+  }
+  const [requestId, job] = entry.value;
+  pendingJobs.delete(requestId);
+  clearTimeout(job.timer);
+  res.json({ type: "paste", requestId, text: job.text });
 });
-internalWss.on("connection", (ws: WebSocket) => {
-  log.info("paste helper connected");
-  helpers.add(ws);
-  ws.on("close", () => {
-    helpers.delete(ws);
-    log.info("paste helper disconnected");
-  });
-  ws.on("error", (err) => {
-    helpers.delete(ws);
-    log.error({ err: err.message }, "paste helper error");
-  });
+
+// Helper 回传：粘贴结果
+app.post("/internal/push", (req, res) => {
+  const { requestId, success, error } = req.body as {
+    requestId?: string;
+    success?: boolean;
+    error?: string;
+  };
+  if (!requestId) {
+    res.status(400).json({ error: "missing requestId" });
+    return;
+  }
+  const job = pendingJobs.get(requestId);
+  if (job) {
+    clearTimeout(job.timer);
+    pendingJobs.delete(requestId);
+    job.resolve({ success: !!success, error });
+  }
+  res.json({ ok: true });
 });
 
 function delegatePaste(
@@ -49,41 +71,14 @@ function delegatePaste(
   timeoutMs = 10000,
 ): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
-    if (helpers.size === 0) {
-      resolve({
-        success: false,
-        error: "没有可用的粘贴 Helper（请确保已启动 helper 进程）",
-      });
-      return;
-    }
-
     const requestId = Math.random().toString(36).slice(2);
-    const payload = JSON.stringify({ type: "paste", text, requestId });
 
-    let responded = false;
     const timer = setTimeout(() => {
-      if (!responded) {
-        responded = true;
-        resolve({ success: false, error: "粘贴 Helper 响应超时" });
-      }
+      pendingJobs.delete(requestId);
+      resolve({ success: false, error: "粘贴 Helper 响应超时" });
     }, timeoutMs);
 
-    const onMessage = (raw: Buffer) => {
-      try {
-        const reply = JSON.parse(raw.toString());
-        if (reply.type === "paste-result" && reply.requestId === requestId) {
-          responded = true;
-          clearTimeout(timer);
-          resolve({ success: reply.success === true, error: reply.error });
-        }
-      } catch {
-        /* ignore malformed */
-      }
-    };
-
-    const helper = helpers.values().next().value as WebSocket;
-    helper.once("message", onMessage);
-    helper.send(payload);
+    pendingJobs.set(requestId, { requestId, text, resolve, timer });
   });
 }
 
@@ -221,70 +216,16 @@ wss.on("connection", (ws: WebSocket) => {
     const t0 = performance.now();
 
     if (target.id === selfId) {
-      if (helpers.size > 0) {
-        const result = await delegatePaste(text);
-        const dur = Math.round(performance.now() - t0);
-        if (result.success) {
-          log.info(
-            { textLen: text.length, duration_ms: dur },
-            "paste to self ok (via helper)",
-          );
-          recordPaste({
-            duration_ms: dur,
-            text_length: text.length,
-            status: "ok",
-            target: "self",
-          });
-          ws.send(
-            JSON.stringify({ type: "success", message: "已粘贴到本机" }),
-          );
-        } else {
-          log.error(
-            { err: result.error, textLen: text.length, duration_ms: dur },
-            "paste to self failed (helper)",
-          );
-          recordPaste({
-            duration_ms: dur,
-            text_length: text.length,
-            status: "error",
-            error: result.error!,
-            target: "self",
-          });
-          ws.send(JSON.stringify({ type: "error", message: result.error }));
-        }
+      const result = await delegatePaste(text);
+      const dur = Math.round(performance.now() - t0);
+      if (result.success) {
+        log.info({ textLen: text.length, duration_ms: dur }, "paste to self ok");
+        recordPaste({ duration_ms: dur, text_length: text.length, status: "ok", target: "self" });
+        ws.send(JSON.stringify({ type: "success", message: "已粘贴到本机" }));
       } else {
-        try {
-          await doPasteAndRestore(text);
-          const dur = Math.round(performance.now() - t0);
-          log.info(
-            { textLen: text.length, duration_ms: dur },
-            "paste to self ok (direct)",
-          );
-          recordPaste({
-            duration_ms: dur,
-            text_length: text.length,
-            status: "ok",
-            target: "self",
-          });
-          ws.send(
-            JSON.stringify({ type: "success", message: "已粘贴到本机" }),
-          );
-        } catch (err) {
-          const dur = Math.round(performance.now() - t0);
-          const message = (err as Error).message;
-          log.error(
-            { err: message, textLen: text.length, duration_ms: dur },
-            "paste to self failed (direct)",
-          );
-          recordPaste({
-            duration_ms: dur,
-            text_length: text.length,
-            status: "error",
-            error: message,
-            target: "self",
-          });
-          ws.send(JSON.stringify({ type: "error", message }));
-        }
+        log.error({ err: result.error, textLen: text.length, duration_ms: dur }, "paste to self failed");
+        recordPaste({ duration_ms: dur, text_length: text.length, status: "error", error: result.error!, target: "self" });
+        ws.send(JSON.stringify({ type: "error", message: result.error }));
       }
     } else {
       try {
