@@ -1,38 +1,50 @@
 /**
  * Helper & internal WebSocket 架构测试。
- *
- * 使用 Node 内置 test runner（node --experimental-test-modules 或 tsx）。
- * 启动方式：npx tsx tests/helper-server.test.ts
+ * 运行：pnpm test:server
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
 import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 
-const PORT = 18770; // 测试用非标准端口
-
-// ═══════════════════════════════════════════════════════════════
-// 模拟 Server 端：接收 helper 连接，发送粘贴指令，等结果
-// ═══════════════════════════════════════════════════════════════
+const PORT = 18771;
 
 describe("Internal WebSocket (helper ↔ server)", () => {
   let server: http.Server;
   let wss: WebSocketServer;
-  let helperSet: Set<WebSocket>;
-  let serverUrl: string;
+  let helpers: Set<WebSocket>;
+  let url: string;
 
   before(async () => {
     server = http.createServer();
     wss = new WebSocketServer({ server, path: "/internal" });
-    helperSet = new Set();
+    helpers = new Set();
 
+    // Server 端行为：跟踪连接，收到 paste 消息后执行 mock 粘贴并回复
     wss.on("connection", (ws) => {
-      helperSet.add(ws);
-      ws.on("close", () => helperSet.delete(ws));
+      helpers.add(ws);
+
+      ws.on("message", (raw: Buffer) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === "paste" && msg.requestId) {
+          // mock: 文本长度 < 5 视为失败，否则成功
+          const success = (msg.text as string).length >= 5;
+          ws.send(
+            JSON.stringify({
+              type: "paste-result",
+              requestId: msg.requestId,
+              success,
+              error: success ? undefined : "mock: text too short",
+            }),
+          );
+        }
+      });
+
+      ws.on("close", () => helpers.delete(ws));
     });
 
     await new Promise<void>((resolve) => server.listen(PORT, resolve));
-    serverUrl = `ws://localhost:${PORT}/internal`;
+    url = `ws://localhost:${PORT}/internal`;
   });
 
   after(async () => {
@@ -41,12 +53,16 @@ describe("Internal WebSocket (helper ↔ server)", () => {
   });
 
   it("accepts helper connection", async () => {
-    const ws = new WebSocket(serverUrl);
+    assert.strictEqual(helpers.size, 0);
+    const ws = new WebSocket(url);
     await new Promise<void>((resolve, reject) => {
       ws.on("open", () => {
-        assert.ok(helperSet.has(ws));
-        ws.close();
-        resolve();
+        // 给一个 tick 让 server 的 connection handler 跑完
+        setImmediate(() => {
+          assert.strictEqual(helpers.size, 1);
+          ws.close();
+          resolve();
+        });
       });
       ws.on("error", reject);
       setTimeout(() => reject(new Error("timeout")), 2000);
@@ -54,15 +70,15 @@ describe("Internal WebSocket (helper ↔ server)", () => {
   });
 
   it("removes helper on disconnect", async () => {
-    const ws = new WebSocket(serverUrl);
+    const ws = new WebSocket(url);
     await new Promise<void>((resolve, reject) => {
       ws.on("open", () => {
+        assert.strictEqual(helpers.size, 1);
         ws.close();
       });
       ws.on("close", () => {
-        // Wait a tick for the server's close handler
         setTimeout(() => {
-          assert.ok(!helperSet.has(ws));
+          assert.strictEqual(helpers.size, 0);
           resolve();
         }, 50);
       });
@@ -71,39 +87,18 @@ describe("Internal WebSocket (helper ↔ server)", () => {
     });
   });
 
-  it("delegates paste to helper and receives result", async () => {
-    // 这个测试模拟完整的 delegate → helper → result 流程
-    const ws = new WebSocket(serverUrl);
-    const requestId = Math.random().toString(36).slice(2);
+  it("delegates paste and receives success", async () => {
+    const ws = new WebSocket(url);
+    const requestId = "test-req-1";
 
     await new Promise<void>((resolve, reject) => {
       ws.on("open", () => {
-        // Server sends paste command
-        ws.send(
-          JSON.stringify({
-            type: "paste",
-            text: "test text",
-            requestId,
-          }),
-        );
+        ws.send(JSON.stringify({ type: "paste", text: "hello world", requestId }));
       });
 
       ws.on("message", (raw: Buffer) => {
         const msg = JSON.parse(raw.toString());
-        // Helper would normally execute paste here — we mock success
-        if (msg.type === "paste" && msg.requestId === requestId) {
-          ws.send(
-            JSON.stringify({
-              type: "paste-result",
-              requestId: msg.requestId,
-              success: true,
-            }),
-          );
-        }
-        if (
-          msg.type === "paste-result" &&
-          msg.requestId === requestId
-        ) {
+        if (msg.type === "paste-result" && msg.requestId === requestId) {
           assert.strictEqual(msg.success, true);
           ws.close();
           resolve();
@@ -115,32 +110,20 @@ describe("Internal WebSocket (helper ↔ server)", () => {
     });
   });
 
-  it("helper reports error on paste failure", async () => {
-    const ws = new WebSocket(serverUrl);
-    const requestId = Math.random().toString(36).slice(2);
+  it("delegates paste and receives error", async () => {
+    const ws = new WebSocket(url);
+    const requestId = "test-req-2";
 
     await new Promise<void>((resolve, reject) => {
       ws.on("open", () => {
-        ws.send(
-          JSON.stringify({ type: "paste", text: "bad text", requestId }),
-        );
+        ws.send(JSON.stringify({ type: "paste", text: "abc", requestId })); // < 5 chars -> fail
       });
 
       ws.on("message", (raw: Buffer) => {
         const msg = JSON.parse(raw.toString());
-        if (msg.type === "paste" && msg.requestId === requestId) {
-          ws.send(
-            JSON.stringify({
-              type: "paste-result",
-              requestId: msg.requestId,
-              success: false,
-              error: "Access is denied",
-            }),
-          );
-        }
         if (msg.type === "paste-result" && msg.requestId === requestId) {
           assert.strictEqual(msg.success, false);
-          assert.strictEqual(msg.error, "Access is denied");
+          assert.strictEqual(msg.error, "mock: text too short");
           ws.close();
           resolve();
         }
@@ -151,23 +134,26 @@ describe("Internal WebSocket (helper ↔ server)", () => {
     });
   });
 
-  it("can have multiple helpers connected", async () => {
-    const ws1 = new WebSocket(serverUrl);
-    const ws2 = new WebSocket(serverUrl);
+  it("supports multiple helpers", async () => {
+    assert.strictEqual(helpers.size, 0);
+    const ws1 = new WebSocket(url);
+    const ws2 = new WebSocket(url);
 
     await new Promise<void>((resolve, reject) => {
       let openCount = 0;
-      const onOpen = () => {
+      const check = () => {
         openCount++;
         if (openCount === 2) {
-          assert.strictEqual(helperSet.size, 2);
-          ws1.close();
-          ws2.close();
-          resolve();
+          setImmediate(() => {
+            assert.strictEqual(helpers.size, 2);
+            ws1.close();
+            ws2.close();
+            resolve();
+          });
         }
       };
-      ws1.on("open", onOpen);
-      ws2.on("open", onOpen);
+      ws1.on("open", check);
+      ws2.on("open", check);
       ws1.on("error", reject);
       ws2.on("error", reject);
       setTimeout(() => reject(new Error("timeout")), 3000);
